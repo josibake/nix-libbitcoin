@@ -1,0 +1,8 @@
+# output of nix build
+result
+
+# outputs from running ./result/bin/bn
+blockchain/
+bn_end.log
+events.log
+hosts.cache

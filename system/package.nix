@@ -15,7 +15,7 @@ stdenv.mkDerivation {
   src = fetchFromGitHub {
     owner = "libbitcoin";
     repo = "libbitcoin-system";
-    rev = "master";
+    rev = "665d7990df1d93d1cc7a6c57a4550ebd1db27e2e";
     sha256 = "sha256-y8/ytPAD9mZVOhrDhzVPJkvvwTLFO+YvI517+KE+5o4";
   };
   # found on the nixos.wiki, apparently autotools is not supported

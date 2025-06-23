@@ -14,7 +14,7 @@ stdenv.mkDerivation {
   src = fetchFromGitHub {
     owner = "libbitcoin";
     repo = "libbitcoin-network";
-    rev = "master";
+    rev = "71aaf453bbc8785e7aac792da0af113ef51f8e5a";
     sha256 = "sha256-MWYRtOGyoX2EnMWSz7t6nDqagZdIQ/raiYPKwD3UlIw";
   };
 

@@ -9,25 +9,32 @@
     self,
     nixpkgs,
   }: let
-    system = "x86_64-linux";
-    pkgs = nixpkgs.legacyPackages.${system};
+    supportedSystems = ["x86_64-linux" "x86_64-darwin" "aarch64-darwin"];
 
-    libbitcoin-system = pkgs.callPackage ./system/package.nix {};
-    libbitcoin-database = pkgs.callPackage ./database/package.nix {
-      inherit libbitcoin-system;
+    perSystem = system: let
+      pkgs = nixpkgs.legacyPackages.${system};
+
+      libbitcoin-system = pkgs.callPackage ./system/package.nix {};
+      libbitcoin-database = pkgs.callPackage ./database/package.nix {
+        inherit libbitcoin-system;
+      };
+      libbitcoin-network = pkgs.callPackage ./network/package.nix {
+        inherit libbitcoin-system;
+      };
+      libbitcoin-node = pkgs.callPackage ./node/package.nix {
+        inherit libbitcoin-system libbitcoin-database libbitcoin-network;
+      };
+    in {
+      packages = {
+        inherit libbitcoin-system libbitcoin-database libbitcoin-network libbitcoin-node;
+        default = libbitcoin-node;
+      };
+      formatter = pkgs.alejandra;
     };
-    libbitcoin-network = pkgs.callPackage ./network/package.nix {
-      inherit libbitcoin-system;
-    };
-    libbitcoin-node = pkgs.callPackage ./node/package.nix {
-      inherit libbitcoin-system libbitcoin-database libbitcoin-network;
-    };
+
+    allSystems = nixpkgs.lib.genAttrs supportedSystems perSystem;
   in {
-    packages.${system} = {
-      inherit libbitcoin-system libbitcoin-database libbitcoin-network libbitcoin-node;
-      default = libbitcoin-node;
-    };
-
-    formatter.${system} = pkgs.alejandra;
+    packages = nixpkgs.lib.mapAttrs (_: v: v.packages) allSystems;
+    formatter = nixpkgs.lib.mapAttrs (_: v: v.formatter) allSystems;
   };
 }

@@ -23,6 +23,7 @@ stdenv.mkDerivation {
   # as a follow-up for now
   nativeBuildInputs = [autoreconfHook pkg-config];
   buildInputs = [boost186 secp256k1 libbitcoin-system];
+  patches = [ ./fix-clang-initializer.diff ];
   configureFlags = [
     "--with-boost-libdir=${boost186.out}/lib"
   ];

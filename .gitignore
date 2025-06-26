@@ -3,6 +3,5 @@ result
 
 # outputs from running ./result/bin/bn
 blockchain/
-bn_end.log
-events.log
+*.log
 hosts.cache

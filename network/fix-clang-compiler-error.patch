@@ -1,0 +1,34 @@
+diff --git a/include/bitcoin/network/config/endpoint.hpp b/include/bitcoin/network/config/endpoint.hpp
+index cb22866e..cc8ca520 100644
+--- a/include/bitcoin/network/config/endpoint.hpp
++++ b/include/bitcoin/network/config/endpoint.hpp
+@@ -41,8 +41,8 @@ public:
+     using system::config::endpoint::endpoint;
+
+     /// If endpoint is a DNS name (not numeric) default address is returned.
+-    operator const address() const NOEXCEPT;
+-    operator const authority() const NOEXCEPT;
++    operator address() const NOEXCEPT;
++    operator authority() const NOEXCEPT;
+
+     /// Equality considers all properties (scheme, host, port).
+     /// Non-numeric and invalid endpoints will match the default address_item.
+diff --git a/src/config/endpoint.cpp b/src/config/endpoint.cpp
+index 39db5acf..0fc24d46 100644
+--- a/src/config/endpoint.cpp
++++ b/src/config/endpoint.cpp
+@@ -47,12 +47,12 @@ messages::address_item endpoint::to_address_item() const NOEXCEPT
+     return to_address();
+ }
+
+-endpoint::operator const address() const NOEXCEPT
++endpoint::operator address() const NOEXCEPT
+ {
+     return to_address();
+ }
+
+-endpoint::operator const authority() const NOEXCEPT
++endpoint::operator authority() const NOEXCEPT
+ {
+     return authority{ to_address() };
+ }

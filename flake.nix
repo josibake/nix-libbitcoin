@@ -13,16 +13,20 @@
 
     perSystem = system: let
       pkgs = nixpkgs.legacyPackages.${system};
+      # use clang
+      stdenv = pkgs.clangStdenv;
+      # use gcc
+      # stdenv = pkgs.stdenv;
 
-      libbitcoin-system = pkgs.callPackage ./system/package.nix {};
+      libbitcoin-system = pkgs.callPackage ./system/package.nix {inherit stdenv; };
       libbitcoin-database = pkgs.callPackage ./database/package.nix {
-        inherit libbitcoin-system;
+        inherit libbitcoin-system stdenv;
       };
       libbitcoin-network = pkgs.callPackage ./network/package.nix {
-        inherit libbitcoin-system;
+        inherit libbitcoin-system stdenv;
       };
       libbitcoin-node = pkgs.callPackage ./node/package.nix {
-        inherit libbitcoin-system libbitcoin-database libbitcoin-network;
+        inherit libbitcoin-system libbitcoin-database libbitcoin-network stdenv;
       };
     in {
       packages = {

@@ -1,40 +1,55 @@
 {
-  description = "flake for building libbitcoin-node";
+  description = "Packages and NixOS module for libbitcoin-server";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    treefmt-nix = {
+      url = "github:numtide/treefmt-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = {
     self,
     nixpkgs,
+    treefmt-nix,
   }: let
     supportedSystems = ["x86_64-linux" "x86_64-darwin" "aarch64-darwin"];
 
     perSystem = system: let
       pkgs = nixpkgs.legacyPackages.${system};
-
-      libbitcoin-system = pkgs.callPackage ./system/package.nix {};
-      libbitcoin-database = pkgs.callPackage ./database/package.nix {
-        inherit libbitcoin-system;
-      };
-      libbitcoin-network = pkgs.callPackage ./network/package.nix {
-        inherit libbitcoin-system;
-      };
-      libbitcoin-node = pkgs.callPackage ./node/package.nix {
-        inherit libbitcoin-system libbitcoin-database libbitcoin-network;
-      };
+      libbitcoinPackages = pkgs.callPackage ./pkgs/libbitcoin {};
+      treefmtEval = treefmt-nix.lib.evalModule pkgs ./treefmt.nix;
     in {
       packages = {
-        inherit libbitcoin-system libbitcoin-database libbitcoin-network libbitcoin-node;
-        default = libbitcoin-node;
+        inherit (libbitcoinPackages) libbitcoin-system libbitcoin-database libbitcoin-network libbitcoin-node libbitcoin-server;
+        default = libbitcoinPackages.libbitcoin-server;
       };
-      formatter = pkgs.alejandra;
+      checks = {
+        formatting = treefmtEval.config.build.check self;
+      };
+      formatter = treefmtEval.config.build.wrapper;
     };
 
     allSystems = nixpkgs.lib.genAttrs supportedSystems perSystem;
   in {
     packages = nixpkgs.lib.mapAttrs (_: v: v.packages) allSystems;
+    checks = nixpkgs.lib.mapAttrs (_: v: v.checks) allSystems;
     formatter = nixpkgs.lib.mapAttrs (_: v: v.formatter) allSystems;
+    overlays.default = final: prev: {
+      libbitcoinPackages = final.callPackage ./pkgs/libbitcoin {};
+      inherit
+        (final.libbitcoinPackages)
+        libbitcoin-system
+        libbitcoin-database
+        libbitcoin-network
+        libbitcoin-node
+        libbitcoin-server
+        ;
+    };
+    nixosModules = rec {
+      default = libbitcoin-server;
+      libbitcoin-server = ./modules/services/libbitcoin-server.nix;
+    };
   };
 }

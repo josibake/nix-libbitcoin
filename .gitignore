@@ -1,8 +1,9 @@
 # output of nix build
 result
 
-# outputs from running ./result/bin/bn
+# outputs from running ./result/bin/bn or ./result/bin/bs
 blockchain/
+logs/
 bn_end.log
 events.log
 hosts.cache

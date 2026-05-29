@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nix-checks:
+    name: Nix checks
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Evaluate flake checks
+        run: nix flake check --no-build --all-systems
+
+      - name: Check formatting
+        run: nix build .#checks.x86_64-linux.formatting --no-link
+
+  build-linux:
+    name: Build libbitcoin-server on Linux
+    runs-on: ubuntu-24.04
+    needs: nix-checks
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build package
+        run: nix build .#packages.x86_64-linux.libbitcoin-server -L

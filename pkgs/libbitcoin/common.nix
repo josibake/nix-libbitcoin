@@ -16,6 +16,7 @@ in {
     hash,
     nativeBuildInputs ? [],
     buildInputs ? [],
+    propagatedBuildInputs ? [],
     cmakeFlags ? [],
     patches ? [],
     meta ? {},
@@ -33,6 +34,7 @@ in {
 
       nativeBuildInputs = [cmake] ++ nativeBuildInputs;
       buildInputs = [boost186 secp256k1 secp256k1CmakeConfig] ++ buildInputs;
+      propagatedBuildInputs = propagatedBuildInputs;
 
       cmakeFlags =
         [

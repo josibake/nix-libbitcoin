@@ -6,8 +6,14 @@
   boost186,
   secp256k1,
   secp256k1CmakeConfig,
+  localRoot ? null,
 }: let
   version = "4.0.0-unstable-2026-05-29";
+  localSource = repo:
+    builtins.path {
+      path = localRoot + "/repos/${repo}";
+      name = "source";
+    };
 in {
   mkLibbitcoin = {
     pname,
@@ -24,11 +30,15 @@ in {
     stdenv.mkDerivation {
       inherit pname version patches;
 
-      src = fetchFromGitHub {
-        owner = "libbitcoin";
-        inherit repo rev;
-        sha256 = hash;
-      };
+      src =
+        if localRoot == null
+        then
+          fetchFromGitHub {
+            owner = "libbitcoin";
+            inherit repo rev;
+            sha256 = hash;
+          }
+        else localSource repo;
 
       sourceRoot = "source/builds/cmake";
 

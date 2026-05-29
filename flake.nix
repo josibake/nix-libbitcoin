@@ -19,11 +19,24 @@
     perSystem = system: let
       pkgs = nixpkgs.legacyPackages.${system};
       libbitcoinPackages = pkgs.callPackage ./pkgs/libbitcoin {};
+      localRootEnv = builtins.getEnv "LIBBITCOIN_LOCAL_ROOT";
+      localRoot =
+        if localRootEnv == ""
+        then throw "Set LIBBITCOIN_LOCAL_ROOT to the multi-repo checkout, e.g. /Users/josibake/libbitcoin"
+        else /. + localRootEnv;
+      localLibbitcoinPackages = pkgs.callPackage ./pkgs/libbitcoin {
+        inherit localRoot;
+      };
       treefmtEval = treefmt-nix.lib.evalModule pkgs ./treefmt.nix;
     in {
       packages = {
         inherit (libbitcoinPackages) libbitcoin-system libbitcoin-database libbitcoin-network libbitcoin-node libbitcoin-server;
         default = libbitcoinPackages.libbitcoin-server;
+        local-libbitcoin-system = localLibbitcoinPackages.libbitcoin-system;
+        local-libbitcoin-database = localLibbitcoinPackages.libbitcoin-database;
+        local-libbitcoin-network = localLibbitcoinPackages.libbitcoin-network;
+        local-libbitcoin-node = localLibbitcoinPackages.libbitcoin-node;
+        local-libbitcoin-server = localLibbitcoinPackages.libbitcoin-server;
       };
       checks = {
         formatting = treefmtEval.config.build.check self;

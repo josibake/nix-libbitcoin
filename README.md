@@ -17,6 +17,14 @@ nix build
 ./result/bin/bs --settings
 ```
 
+Build from a local multi-repo checkout instead of the pinned GitHub commits:
+
+```shell
+LIBBITCOIN_LOCAL_ROOT=~/libbitcoin nix build .#local-libbitcoin-server --print-build-logs
+```
+
+`LIBBITCOIN_LOCAL_ROOT` should point at the directory that contains `repos/`.
+
 Available packages:
 
 - `libbitcoin-system`

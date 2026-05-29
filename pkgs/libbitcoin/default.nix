@@ -1,6 +1,11 @@
-{callPackage}: rec {
+{
+  callPackage,
+  localRoot ? null,
+}: rec {
   secp256k1CmakeConfig = callPackage ./secp256k1-cmake-config.nix {};
-  common = callPackage ./common.nix {inherit secp256k1CmakeConfig;};
+  common = callPackage ./common.nix {
+    inherit secp256k1CmakeConfig localRoot;
+  };
 
   libbitcoin-system = callPackage ./system.nix {inherit common;};
   libbitcoin-database = callPackage ./database.nix {

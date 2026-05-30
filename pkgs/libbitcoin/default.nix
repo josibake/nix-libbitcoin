@@ -1,9 +1,24 @@
 {
   callPackage,
+  fetchFromGitHub,
+  secp256k1,
   localRoot ? null,
 }: rec {
-  secp256k1CmakeConfig = callPackage ./secp256k1-cmake-config.nix {};
+  secp256k1_0_7 = secp256k1.overrideAttrs (_old: rec {
+    version = "0.7.0";
+    src = fetchFromGitHub {
+      owner = "bitcoin-core";
+      repo = "secp256k1";
+      rev = "v${version}";
+      hash = "sha256-V9hm96NJl6ppE9TPCo7/ezs6bw0CEQMFMfIAo0WzDLQ=";
+    };
+  });
+
+  secp256k1CmakeConfig = callPackage ./secp256k1-cmake-config.nix {
+    secp256k1 = secp256k1_0_7;
+  };
   common = callPackage ./common.nix {
+    secp256k1 = secp256k1_0_7;
     inherit secp256k1CmakeConfig localRoot;
   };
 

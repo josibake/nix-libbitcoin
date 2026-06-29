@@ -86,16 +86,12 @@ Format Nix files with:
 nix fmt
 ```
 
+The flake formatter uses `treefmt-nix` to run the official Nix formatter.
+
 Run evaluation checks without building the C++ packages:
 
 ```shell
 nix flake check --no-build --all-systems
-```
-
-Run only the formatting check:
-
-```shell
-nix build .#checks.$(nix eval --raw --impure --expr builtins.currentSystem).formatting --no-link
 ```
 
 ## Silent Payments Load Benchmark

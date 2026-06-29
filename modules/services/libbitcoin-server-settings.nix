@@ -1,13 +1,16 @@
 # Generated from libbitcoin-server src/parser.cpp at commit 1df3db4a653ca56a8785093bc7facee4996796b0.
 # Keep this file in sync when updating the libbitcoin-server source pin.
-{lib}: let
+{ lib }:
+let
   inherit (lib) mkOption types;
-  mkNullable = type: description:
+  mkNullable =
+    type: description:
     mkOption {
       inherit type description;
       default = null;
     };
-in {
+in
+{
   forks = mkOption {
     type = types.submodule {
       options = {
@@ -33,7 +36,7 @@ in {
         scrypt_proof_of_work = mkNullable (types.nullOr types.bool) "Use scrypt hashing for proof of work, defaults to 'false' (hard fork).";
       };
     };
-    default = {};
+    default = { };
     description = "libbitcoin-server [forks] configuration settings.";
   };
   bitcoin = mkOption {
@@ -64,7 +67,7 @@ in {
         minimum_work = mkNullable (types.nullOr types.str) "The minimum work for any branch to be considered valid, defaults to '000000000000000000000000000000000000000052b2559353df4117b7348b64'.";
       };
     };
-    default = {};
+    default = { };
     description = "libbitcoin-server [bitcoin] configuration settings.";
   };
   network = mkOption {
@@ -78,7 +81,7 @@ in {
         whitelist = mkNullable (types.nullOr (types.listOf types.str)) "IP address to allow, prohibits all others, multiple allowed.";
       };
     };
-    default = {};
+    default = { };
     description = "libbitcoin-server [network] configuration settings.";
   };
   peer = mkOption {
@@ -107,7 +110,7 @@ in {
         path = mkNullable (types.nullOr (types.either types.path types.str)) "The peer address cache file directory, defaults to empty.";
       };
     };
-    default = {};
+    default = { };
     description = "libbitcoin-server [peer] configuration settings.";
   };
   outbound = mkOption {
@@ -128,7 +131,7 @@ in {
         socks = mkNullable (types.nullOr types.str) "The socks5 proxy endpoint (port required).";
       };
     };
-    default = {};
+    default = { };
     description = "libbitcoin-server [outbound] configuration settings.";
   };
   inbound = mkOption {
@@ -144,7 +147,7 @@ in {
         self = mkNullable (types.nullOr (types.listOf types.str)) "IP address to advertise, multiple allowed.";
       };
     };
-    default = {};
+    default = { };
     description = "libbitcoin-server [inbound] configuration settings.";
   };
   manual = mkOption {
@@ -160,7 +163,7 @@ in {
         socks = mkNullable (types.nullOr types.str) "The socks5 proxy endpoint (port required).";
       };
     };
-    default = {};
+    default = { };
     description = "libbitcoin-server [manual] configuration settings.";
   };
   admin = mkOption {
@@ -185,7 +188,7 @@ in {
         default = mkNullable (types.nullOr types.str) "The path of the default source page, defaults to 'index.html'.";
       };
     };
-    default = {};
+    default = { };
     description = "libbitcoin-server [admin] configuration settings.";
   };
   native = mkOption {
@@ -211,7 +214,7 @@ in {
         websocket = mkNullable (types.nullOr types.bool) "Enable websocket interface, defaults to true.";
       };
     };
-    default = {};
+    default = { };
     description = "libbitcoin-server [native] configuration settings.";
   };
   bitcoind = mkOption {
@@ -236,7 +239,7 @@ in {
         allow_opaque_origin = mkNullable (types.nullOr types.bool) "Allow requests from opaque origin (see CORS), multiple allowed, defaults to false.";
       };
     };
-    default = {};
+    default = { };
     description = "libbitcoin-server [bitcoind] configuration settings.";
   };
   electrum = mkOption {
@@ -266,7 +269,7 @@ in {
         more_safe = mkNullable (types.nullOr (types.listOf types.str)) "Advertised secure host:port at which another server can be reached (defaults to empty).";
       };
     };
-    default = {};
+    default = { };
     description = "libbitcoin-server [electrum] configuration settings.";
   };
   stratum_v1 = mkOption {
@@ -283,7 +286,7 @@ in {
         maximum_request = mkNullable (types.nullOr types.ints.unsigned) "The maximum allowed request size, defaults to '4000000'.";
       };
     };
-    default = {};
+    default = { };
     description = "libbitcoin-server [stratum_v1] configuration settings.";
   };
   stratum_v2 = mkOption {
@@ -297,7 +300,7 @@ in {
         maximum_request = mkNullable (types.nullOr types.ints.unsigned) "The maximum allowed request size, defaults to '4000000'.";
       };
     };
-    default = {};
+    default = { };
     description = "libbitcoin-server [stratum_v2] configuration settings.";
   };
   node = mkOption {
@@ -325,7 +328,7 @@ in {
         warn_dirty_ratio = mkNullable (types.nullOr types.ints.unsigned) "Warn on linux if 'vm.dirty_ratio' is below value, defaults to 90 (0 disables).";
       };
     };
-    default = {};
+    default = { };
     description = "libbitcoin-server [node] configuration settings.";
   };
   database = mkOption {
@@ -393,7 +396,7 @@ in {
         silent_start_height = mkNullable (types.nullOr types.ints.unsigned) "The first height indexed by the silent table, defaults to the bip341 activation height.";
       };
     };
-    default = {};
+    default = { };
     description = "libbitcoin-server [database] configuration settings.";
   };
   log = mkOption {
@@ -414,7 +417,7 @@ in {
         path = mkNullable (types.nullOr (types.either types.path types.str)) "The log files directory, defaults to empty.";
       };
     };
-    default = {};
+    default = { };
     description = "libbitcoin-server [log] configuration settings.";
   };
 }

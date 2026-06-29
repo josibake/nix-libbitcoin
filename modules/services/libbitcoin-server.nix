@@ -3,32 +3,38 @@
   lib,
   pkgs,
   ...
-}: let
+}:
+let
   cfg = config.services.libbitcoin-server;
   defaultPackage =
-    pkgs.libbitcoin-server
-    or pkgs.libbitcoinPackages.libbitcoin-server
-    or (pkgs.callPackage ../../pkgs/libbitcoin {}).libbitcoin-server;
-  settingsOptions = import ./libbitcoin-server-settings.nix {inherit lib;};
+    pkgs.libbitcoin-server or pkgs.libbitcoinPackages.libbitcoin-server
+      or (pkgs.callPackage ../../pkgs/libbitcoin { }).libbitcoin-server;
+  settingsOptions = import ./libbitcoin-server-settings.nix { inherit lib; };
 
-  formatValue = value:
-    if lib.isBool value
-    then lib.boolToString value
-    else if lib.isPath value
-    then toString value
-    else toString value;
+  formatValue =
+    value:
+    if lib.isBool value then
+      lib.boolToString value
+    else if lib.isPath value then
+      toString value
+    else
+      toString value;
 
-  renderKey = key: value:
-    if value == null
-    then []
-    else if lib.isList value
-    then map (item: "${key} = ${formatValue item}") value
-    else ["${key} = ${formatValue value}"];
+  renderKey =
+    key: value:
+    if value == null then
+      [ ]
+    else if lib.isList value then
+      map (item: "${key} = ${formatValue item}") value
+    else
+      [ "${key} = ${formatValue value}" ];
 
-  renderSection = name: values: let
-    lines = lib.concatLists (lib.mapAttrsToList renderKey values);
-  in
-    lib.optionalString (lines != []) ''
+  renderSection =
+    name: values:
+    let
+      lines = lib.concatLists (lib.mapAttrsToList renderKey values);
+    in
+    lib.optionalString (lines != [ ]) ''
       [${name}]
       ${lib.concatStringsSep "\n" lines}
     '';
@@ -38,11 +44,9 @@
     ${cfg.extraConfig}
   '';
 
-  configFile =
-    if cfg.configFile == null
-    then generatedConfig
-    else cfg.configFile;
-in {
+  configFile = if cfg.configFile == null then generatedConfig else cfg.configFile;
+in
+{
   options.services.libbitcoin-server = {
     enable = lib.mkEnableOption "libbitcoin-server";
 
@@ -93,10 +97,10 @@ in {
       type = lib.types.submodule {
         options = settingsOptions;
       };
-      default = {};
+      default = { };
       example = {
         database.path = "/var/lib/libbitcoin-server/blockchain";
-        inbound.bind = ["0.0.0.0:8333"];
+        inbound.bind = [ "0.0.0.0:8333" ];
         log.path = "/var/log/libbitcoin-server";
       };
       description = "Typed libbitcoin-server settings rendered as sections and keys.";
@@ -135,13 +139,13 @@ in {
       home = cfg.dataDir;
     };
 
-    users.groups.${cfg.group} = {};
+    users.groups.${cfg.group} = { };
 
     systemd.services.libbitcoin-server = {
       description = "libbitcoin-server";
-      wantedBy = ["multi-user.target"];
-      after = ["network-online.target"];
-      wants = ["network-online.target"];
+      wantedBy = [ "multi-user.target" ];
+      after = [ "network-online.target" ];
+      wants = [ "network-online.target" ];
 
       serviceConfig = {
         ExecStart = "${lib.getExe cfg.package} --config ${configFile}";
@@ -157,10 +161,13 @@ in {
         PrivateTmp = true;
         ProtectHome = true;
         ProtectSystem = "strict";
-        ReadWritePaths = [cfg.dataDir cfg.logDir];
+        ReadWritePaths = [
+          cfg.dataDir
+          cfg.logDir
+        ];
       };
     };
 
-    networking.firewall.allowedTCPPorts = lib.mkIf cfg.openFirewall [cfg.p2pPort];
+    networking.firewall.allowedTCPPorts = lib.mkIf cfg.openFirewall [ cfg.p2pPort ];
   };
 }

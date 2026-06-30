@@ -1,6 +1,9 @@
 {
   common,
   lib,
+  boost186,
+  secp256k1,
+  secp256k1CmakeConfig,
   enableXcpu ? false,
   systemPatches ? [ ],
 }:
@@ -17,6 +20,11 @@ common.mkLibbitcoin {
   ++ lib.optionals enableXcpu [
     "-Denable-avx2=ON"
     "-Denable-shani=ON"
+  ];
+  propagatedBuildInputs = [
+    boost186
+    secp256k1
+    secp256k1CmakeConfig
   ];
 
   meta.description = "Foundational C++ library for the libbitcoin toolkit";

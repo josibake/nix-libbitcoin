@@ -40,10 +40,8 @@ rec {
       ;
   };
   common = callPackage ./common.nix {
-    secp256k1 = secp256k1_0_7;
     inherit
       ultrafastSecp256k1
-      secp256k1CmakeConfig
       localRoot
       localSources
       withTests
@@ -54,7 +52,15 @@ rec {
       ;
   };
 
-  libbitcoin-system = callPackage ./system.nix { inherit common enableXcpu systemPatches; };
+  libbitcoin-system = callPackage ./system.nix {
+    secp256k1 = secp256k1_0_7;
+    inherit
+      common
+      secp256k1CmakeConfig
+      enableXcpu
+      systemPatches
+      ;
+  };
   libbitcoin-database = callPackage ./database.nix {
     inherit common libbitcoin-system;
   };

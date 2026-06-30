@@ -4,10 +4,7 @@
   lib,
   fetchFromGitHub,
   cmake,
-  boost186,
-  secp256k1,
   ultrafastSecp256k1,
-  secp256k1CmakeConfig,
   localRoot ? null,
   localSources ? { },
   withTests ? false,
@@ -74,14 +71,7 @@ in
       sourceRoot = "source/builds/cmake";
 
       nativeBuildInputs = [ cmake ] ++ nativeBuildInputs;
-      buildInputs = [
-        boost186
-        secp256k1
-        secp256k1CmakeConfig
-      ]
-      ++ lib.optionals withUltrafast [ ultrafastSecp256k1 ]
-      ++ buildInputs;
-      propagatedBuildInputs = propagatedBuildInputs;
+      buildInputs = lib.optionals withUltrafast [ ultrafastSecp256k1 ] ++ buildInputs;
       NIX_CFLAGS_COMPILE = lib.optionalString (
         withUltrafast && pname == "libbitcoin-system"
       ) "-DWITH_ULTRAFAST";
@@ -98,6 +88,7 @@ in
       postPatch = lib.optionalString (patchRoot != ".") ''
         popd
       '';
+      inherit propagatedBuildInputs;
 
       cmakeFlags = [
         "-DBUILD_SHARED_LIBS=ON"

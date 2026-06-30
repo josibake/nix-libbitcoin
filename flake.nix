@@ -17,11 +17,13 @@
       ...
     }:
     let
+      lib = nixpkgs.lib;
       supportedSystems = [
         "x86_64-linux"
         "x86_64-darwin"
         "aarch64-darwin"
       ];
+      forAllSystems = lib.genAttrs supportedSystems;
 
       perSystem =
         system:
@@ -70,8 +72,6 @@
               }
             else
               { };
-        in
-        {
           packages = {
             inherit (libbitcoinPackages)
               ultrafastSecp256k1
@@ -95,7 +95,17 @@
             local-libbitcoin-node-tests = localLibbitcoinTestPackages.libbitcoin-node;
             local-libbitcoin-server-tests = localLibbitcoinTestPackages.libbitcoin-server;
           };
+          serverApp = {
+            type = "app";
+            program = lib.getExe packages.libbitcoin-server;
+            meta.description = "Run libbitcoin-server";
+          };
+        in
+        {
+          inherit packages;
           apps = {
+            default = serverApp;
+            libbitcoin-server = serverApp;
             sp-load = {
               type = "app";
               program = toString (
@@ -110,15 +120,17 @@
             formatting = treefmtEval.config.build.check self;
           };
           formatter = treefmtEval.config.build.wrapper;
+          legacyPackages = libbitcoinPackages;
         };
 
-      allSystems = nixpkgs.lib.genAttrs supportedSystems perSystem;
+      allSystems = forAllSystems perSystem;
     in
     {
-      packages = nixpkgs.lib.mapAttrs (_: v: v.packages) allSystems;
-      apps = nixpkgs.lib.mapAttrs (_: v: v.apps) allSystems;
+      packages = lib.mapAttrs (_: v: v.packages) allSystems;
+      apps = lib.mapAttrs (_: v: v.apps) allSystems;
       checks = nixpkgs.lib.mapAttrs (_: v: v.checks) allSystems;
-      formatter = nixpkgs.lib.mapAttrs (_: v: v.formatter) allSystems;
+      legacyPackages = lib.mapAttrs (_: v: v.legacyPackages) allSystems;
+      formatter = lib.mapAttrs (_: v: v.formatter) allSystems;
       overlays.default = final: prev: {
         libbitcoinPackages = final.callPackage ./pkgs/libbitcoin { };
         inherit (final.libbitcoinPackages)

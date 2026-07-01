@@ -1,0 +1,13 @@
+diff --git a/src/cuda/src/secp256k1.cu b/src/cuda/src/secp256k1.cu
+index 09521b4..d294bd0 100644
+--- a/src/cuda/src/secp256k1.cu
++++ b/src/cuda/src/secp256k1.cu
+@@ -34,7 +34,7 @@ void field_sub_kernel(const FieldElement* a, const FieldElement* b, FieldElement
+     }
+ }
+ 
+-__global__ __launch_bounds__(256, 4)
++__global__ __launch_bounds__(256, 1)
+ void field_inv_kernel(const FieldElement* a, FieldElement* r, int count) {
+     int idx = blockIdx.x * blockDim.x + threadIdx.x;
+     if (idx < count) {

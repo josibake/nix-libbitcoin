@@ -1,0 +1,74 @@
+diff --git a/src/cuda/src/secp256k1.cu b/src/cuda/src/secp256k1.cu
+index 09521b4..9020709 100644
+--- a/src/cuda/src/secp256k1.cu
++++ b/src/cuda/src/secp256k1.cu
+@@ -341,13 +341,16 @@ __global__ __launch_bounds__(128, 2)
+ {
+     int idx = blockIdx.x * blockDim.x + threadIdx.x;
+     if (idx >= count) return;
++    const size_t offset32 = static_cast<size_t>(idx) * 32;
++    const size_t offset33 = static_cast<size_t>(idx) * 33;
++
+     results[idx] = frost_verify_partial_device(
+-        z_i_bytes        + idx * 32,
+-        D_i_bytes        + idx * 33,
+-        E_i_bytes        + idx * 33,
+-        Y_i_bytes        + idx * 33,
+-        rho_i_bytes      + idx * 32,
+-        lambda_i_e_bytes + idx * 32,
++        z_i_bytes        + offset32,
++        D_i_bytes        + offset33,
++        E_i_bytes        + offset33,
++        Y_i_bytes        + offset33,
++        rho_i_bytes      + offset32,
++        lambda_i_e_bytes + offset32,
+         negate_R [idx],
+         negate_key[idx]);
+ }
+@@ -364,7 +367,8 @@ void batch_jacobian_to_compressed_kernel(
+ {
+     int idx = blockIdx.x * blockDim.x + threadIdx.x;
+     if (idx >= count) return;
+-    jacobian_to_compressed_device(&points[idx], out33 + idx * 33);
++    const size_t offset = static_cast<size_t>(idx) * 33;
++    jacobian_to_compressed_device(&points[idx], out33 + offset);
+ }
+ #endif // !SECP256K1_CUDA_LIMBS_32
+ 
+diff --git a/src/gpu/src/gpu_backend_cuda.cu b/src/gpu/src/gpu_backend_cuda.cu
+index 52b64c0..fdfd879 100644
+--- a/src/gpu/src/gpu_backend_cuda.cu
++++ b/src/gpu/src/gpu_backend_cuda.cu
+@@ -259,9 +259,10 @@ __global__ void batch_jac_to_compressed_kernel(
+ {
+     int idx = blockIdx.x * blockDim.x + threadIdx.x;
+     if (idx >= count) return;
+-    if (!point_to_compressed(&pts[idx], out33 + idx * 33)) {
++    const size_t offset = static_cast<size_t>(idx) * 33;
++    if (!point_to_compressed(&pts[idx], out33 + offset)) {
+         /* infinity — write zero prefix */
+-        memset(out33 + idx * 33, 0, 33);
++        memset(out33 + offset, 0, 33);
+     }
+ }
+ 
+@@ -272,7 +273,8 @@ __global__ void batch_compressed_to_jac_kernel(
+ {
+     int idx = blockIdx.x * blockDim.x + threadIdx.x;
+     if (idx >= count) return;
+-    ok[idx] = point_from_compressed(pubs33 + idx * 33, &out[idx]);
++    const size_t offset = static_cast<size_t>(idx) * 33;
++    ok[idx] = point_from_compressed(pubs33 + offset, &out[idx]);
+ }
+ 
+ __device__ __forceinline__ uint64_t lbtc_load_le64(const uint8_t* p)
+@@ -416,7 +418,8 @@ __global__ void ecdh_batch_kernel(
+     if (idx >= count) return;
+ 
+     out_ok[idx] = secp256k1::cuda::ecdh_compute(
+-        &privkeys[idx], &peer_pubs[idx], out_secrets + idx * 32);
++        &privkeys[idx], &peer_pubs[idx],
++        out_secrets + static_cast<size_t>(idx) * 32);
+ }
+ #endif  // SECP256K1_GPU_HAS_ECDH
+ 

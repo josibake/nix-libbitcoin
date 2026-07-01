@@ -1,0 +1,255 @@
+diff --git a/src/gpu/src/gpu_backend_cuda.cu b/src/gpu/src/gpu_backend_cuda.cu
+index 31171bc..a7d3ed7 100644
+--- a/src/gpu/src/gpu_backend_cuda.cu
++++ b/src/gpu/src/gpu_backend_cuda.cu
+@@ -298,16 +298,16 @@ struct CudaBatchScratch {
+     uint8_t* column_pubs33 = nullptr;
+     uint8_t* column_sigs64 = nullptr;
+     uint8_t* column_keys = nullptr;
++    uint8_t* column_results = nullptr;
+     JacobianPoint* column_pubs = nullptr;
+     bool* column_pub_ok = nullptr;
+-    bool* column_results = nullptr;
+     std::size_t column_msgs_bytes = 0;
+     std::size_t column_pubs33_bytes = 0;
+     std::size_t column_sigs64_bytes = 0;
+     std::size_t column_keys_bytes = 0;
++    std::size_t column_results_bytes = 0;
+     std::size_t column_pubs_count = 0;
+     std::size_t column_pub_ok_count = 0;
+-    std::size_t column_results_count = 0;
+ 
+     ~CudaBatchScratch() {
+         free_lbtc_device();
+@@ -370,7 +370,7 @@ struct CudaBatchScratch {
+         if (column_results) {
+             cudaFree(column_results);
+             column_results = nullptr;
+-            column_results_count = 0;
++            column_results_bytes = 0;
+         }
+         if (column_pub_ok) {
+             cudaFree(column_pub_ok);
+@@ -475,7 +475,24 @@ struct CudaBatchScratch {
+         if (with_key_markers) {
+             return ensure_column_bytes(column_keys, column_keys_bytes, count);
+         }
+-        return ensure_column_bools(column_results, column_results_count, count);
++        return ensure_column_bytes(column_results, column_results_bytes, count);
++    }
++
++    cudaError_t ensure_schnorr_column_buffers(std::size_t count,
++                                              bool with_key_markers) {
++        cudaError_t err = ensure_column_bytes(column_msgs, column_msgs_bytes,
++                                              count * 32);
++        if (err != cudaSuccess) return err;
++        err = ensure_column_bytes(column_pubs33, column_pubs33_bytes,
++                                  count * 32);
++        if (err != cudaSuccess) return err;
++        err = ensure_column_bytes(column_sigs64, column_sigs64_bytes,
++                                  count * 64);
++        if (err != cudaSuccess) return err;
++        if (with_key_markers) {
++            return ensure_column_bytes(column_keys, column_keys_bytes, count);
++        }
++        return ensure_column_bytes(column_results, column_results_bytes, count);
+     }
+ };
+ 
+@@ -575,7 +592,7 @@ __global__ void ecdsa_verify_opaque_columns_kernel(
+     const JacobianPoint* __restrict__ public_keys,
+     const bool* __restrict__ public_key_ok,
+     const uint8_t* __restrict__ opaque_sigs64,
+-    bool* __restrict__ results,
++    uint8_t* __restrict__ results,
+     int count)
+ {
+     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+@@ -585,8 +602,9 @@ __global__ void ecdsa_verify_opaque_columns_kernel(
+     const bool ok =
+         public_key_ok[idx] &&
+         lbtc_parse_opaque_signature(opaque_sigs64 + static_cast<size_t>(idx) * 64, &sig);
+-    results[idx] = ok && ecdsa_verify(msg_hashes + static_cast<size_t>(idx) * 32,
+-                                      &public_keys[idx], &sig);
++    results[idx] =
++        (ok && ecdsa_verify(msg_hashes + static_cast<size_t>(idx) * 32,
++                            &public_keys[idx], &sig)) ? 1u : 0u;
+ }
+ 
+ __global__ void ecdsa_verify_opaque_collect_kernel(
+@@ -610,6 +628,47 @@ __global__ void ecdsa_verify_opaque_collect_kernel(
+     }
+ }
+ 
++__global__ void schnorr_verify_columns_kernel(
++    const uint8_t* __restrict__ pubkeys_x,
++    const uint8_t* __restrict__ msgs,
++    const uint8_t* __restrict__ sigs64,
++    uint8_t* __restrict__ results,
++    int count)
++{
++    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
++    if (idx >= count) return;
++
++    SchnorrSignatureGPU sig;
++    const uint8_t* sig_bytes = sigs64 + static_cast<size_t>(idx) * 64;
++    const uint8_t* pk = pubkeys_x + static_cast<size_t>(idx) * 32;
++    const uint8_t* msg = msgs + static_cast<size_t>(idx) * 32;
++
++    results[idx] =
++        (schnorr_sig_parse_strict(sig_bytes, &sig) &&
++         schnorr_verify(pk, msg, &sig)) ? 1u : 0u;
++}
++
++__global__ void schnorr_verify_collect_columns_kernel(
++    const uint8_t* __restrict__ pubkeys_x,
++    const uint8_t* __restrict__ msgs,
++    const uint8_t* __restrict__ sigs64,
++    uint8_t* __restrict__ key_cells,
++    int count)
++{
++    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
++    if (idx >= count) return;
++
++    SchnorrSignatureGPU sig;
++    const uint8_t* sig_bytes = sigs64 + static_cast<size_t>(idx) * 64;
++    const uint8_t* pk = pubkeys_x + static_cast<size_t>(idx) * 32;
++    const uint8_t* msg = msgs + static_cast<size_t>(idx) * 32;
++
++    if (schnorr_sig_parse_strict(sig_bytes, &sig) &&
++        schnorr_verify(pk, msg, &sig)) {
++        key_cells[idx] = 0u;
++    }
++}
++
+ #if SECP256K1_GPU_HAS_MSM
+ /** MSM block reduction: each block reduces BLOCK_SZ partials → 1 result
+  *  via shared-memory tree.  Shared mem = blockDim.x * sizeof(JacobianPoint).
+@@ -1116,7 +1175,7 @@ gmb_cleanup:
+         uint8_t* const d_sigs64 = g_cuda_batch_scratch.column_sigs64;
+         JacobianPoint* const d_pubs = g_cuda_batch_scratch.column_pubs;
+         bool* const d_pub_ok = g_cuda_batch_scratch.column_pub_ok;
+-        bool* const d_res = g_cuda_batch_scratch.column_results;
++        uint8_t* const d_res = g_cuda_batch_scratch.column_results;
+ 
+         CUDA_TRY(cudaMemcpy(d_msgs, msg_hashes32, count * 32, cudaMemcpyHostToDevice));
+         CUDA_TRY(cudaMemcpy(d_pubs33, pubkeys33, count * 33, cudaMemcpyHostToDevice));
+@@ -1133,10 +1192,7 @@ gmb_cleanup:
+         CUDA_TRY(cudaGetLastError());
+         CUDA_TRY(cudaDeviceSynchronize());
+ 
+-        uint8_t* const h_res = g_cuda_batch_scratch.ensure_results(count);
+-        CUDA_TRY(cudaMemcpy(h_res, d_res, count * sizeof(bool), cudaMemcpyDeviceToHost));
+-        for (size_t i = 0; i < count; ++i)
+-            out_results[i] = h_res[i] ? 1 : 0;
++        CUDA_TRY(cudaMemcpy(out_results, d_res, count, cudaMemcpyDeviceToHost));
+ 
+         clear_error();
+         return GpuError::Ok;
+@@ -1152,45 +1208,28 @@ gmb_cleanup:
+         if (!msg_hashes32 || !pubkeys_x32 || !sigs64 || !out_results)
+             return set_error(GpuError::NullArg, "NULL buffer");
+ 
+-        /* Prepare Schnorr sigs in CUDA type */
+-        std::vector<SchnorrSignatureGPU> h_sigs(count);
+-        for (size_t i = 0; i < count; ++i) {
+-            bytes_to_schnorr_sig(sigs64 + i * 64, &h_sigs[i]);
++        if (g_cuda_batch_scratch.ensure_schnorr_column_buffers(count, false) != cudaSuccess) {
++            return set_error(GpuError::Memory, "schnorr column buffer alloc");
+         }
+ 
+-        /* Allocate device memory */
+-        uint8_t*             d_pks  = nullptr;
+-        uint8_t*             d_msgs = nullptr;
+-        SchnorrSignatureGPU* d_sigs = nullptr;
+-        bool*                d_res  = nullptr;
+-
+-        CUDA_TRY(cudaMalloc(&d_pks, count * 32));
+-        CUDA_TRY(cudaMalloc(&d_msgs, count * 32));
+-        CUDA_TRY(cudaMalloc(&d_sigs, count * sizeof(SchnorrSignatureGPU)));
+-        CUDA_TRY(cudaMalloc(&d_res, count * sizeof(bool)));
++        uint8_t* const d_pks = g_cuda_batch_scratch.column_pubs33;
++        uint8_t* const d_msgs = g_cuda_batch_scratch.column_msgs;
++        uint8_t* const d_sigs64 = g_cuda_batch_scratch.column_sigs64;
++        uint8_t* const d_res = g_cuda_batch_scratch.column_results;
+ 
+-        CUDA_TRY(cudaMemcpy(d_pks, pubkeys_x32, count * 32, cudaMemcpyHostToDevice));
+         CUDA_TRY(cudaMemcpy(d_msgs, msg_hashes32, count * 32, cudaMemcpyHostToDevice));
+-        CUDA_TRY(cudaMemcpy(d_sigs, h_sigs.data(), count * sizeof(SchnorrSignatureGPU), cudaMemcpyHostToDevice));
++        CUDA_TRY(cudaMemcpy(d_pks, pubkeys_x32, count * 32, cudaMemcpyHostToDevice));
++        CUDA_TRY(cudaMemcpy(d_sigs64, sigs64, count * 64, cudaMemcpyHostToDevice));
+ 
+-        /* Launch */
+         int threads = 128;
+         int blocks  = (static_cast<int>(count) + threads - 1) / threads;
+-        schnorr_verify_batch_kernel<<<blocks, threads>>>(
+-            d_pks, d_msgs, d_sigs, d_res, static_cast<int>(count));
++        schnorr_verify_columns_kernel<<<blocks, threads>>>(
++            d_pks, d_msgs, d_sigs64, d_res, static_cast<int>(count));
+         CUDA_TRY(cudaGetLastError());
+         CUDA_TRY(cudaDeviceSynchronize());
+ 
+-        /* Download results */
+-        uint8_t* const h_res = g_cuda_batch_scratch.ensure_results(count);
+-        CUDA_TRY(cudaMemcpy(h_res, d_res, count * sizeof(bool), cudaMemcpyDeviceToHost));
+-        for (size_t i = 0; i < count; ++i)
+-            out_results[i] = h_res[i] ? 1 : 0;
++        CUDA_TRY(cudaMemcpy(out_results, d_res, count, cudaMemcpyDeviceToHost));
+ 
+-        cudaFree(d_res);
+-        cudaFree(d_sigs);
+-        cudaFree(d_msgs);
+-        cudaFree(d_pks);
+         clear_error();
+         return GpuError::Ok;
+     }
+@@ -1314,38 +1353,29 @@ gmb_cleanup:
+         if (!msg_hashes32 || !pubkeys_x32 || !sigs64 || !key_buffer)
+             return set_error(GpuError::NullArg, "NULL buffer");
+ 
+-        std::vector<SchnorrSignatureGPU> h_sigs(count);
+-        for (size_t i = 0; i < count; ++i)
+-            bytes_to_schnorr_sig(sigs64 + i * 64, &h_sigs[i]);
+-
+-        uint8_t*             d_pks  = nullptr;
+-        uint8_t*             d_msgs = nullptr;
+-        SchnorrSignatureGPU* d_sigs = nullptr;
+-        uint8_t*             d_keys = nullptr;
++        if (g_cuda_batch_scratch.ensure_schnorr_column_buffers(count, true) != cudaSuccess) {
++            return set_error(GpuError::Memory, "schnorr column collect buffer alloc");
++        }
+ 
+-        CUDA_TRY(cudaMalloc(&d_pks, count * 32));
+-        CUDA_TRY(cudaMalloc(&d_msgs, count * 32));
+-        CUDA_TRY(cudaMalloc(&d_sigs, count * sizeof(SchnorrSignatureGPU)));
+-        CUDA_TRY(cudaMalloc(&d_keys, count));
++        uint8_t* const d_pks = g_cuda_batch_scratch.column_pubs33;
++        uint8_t* const d_msgs = g_cuda_batch_scratch.column_msgs;
++        uint8_t* const d_sigs64 = g_cuda_batch_scratch.column_sigs64;
++        uint8_t* const d_keys = g_cuda_batch_scratch.column_keys;
+ 
+-        CUDA_TRY(cudaMemcpy(d_pks, pubkeys_x32, count * 32, cudaMemcpyHostToDevice));
+         CUDA_TRY(cudaMemcpy(d_msgs, msg_hashes32, count * 32, cudaMemcpyHostToDevice));
+-        CUDA_TRY(cudaMemcpy(d_sigs, h_sigs.data(), count * sizeof(SchnorrSignatureGPU), cudaMemcpyHostToDevice));
++        CUDA_TRY(cudaMemcpy(d_pks, pubkeys_x32, count * 32, cudaMemcpyHostToDevice));
++        CUDA_TRY(cudaMemcpy(d_sigs64, sigs64, count * 64, cudaMemcpyHostToDevice));
+         CUDA_TRY(cudaMemcpy(d_keys, key_buffer, count, cudaMemcpyHostToDevice));
+ 
+         int threads = 128;
+         int blocks  = (static_cast<int>(count) + threads - 1) / threads;
+-        schnorr_verify_collect_kernel<<<blocks, threads>>>(
+-            d_pks, d_msgs, d_sigs, d_keys, static_cast<int>(count));
++        schnorr_verify_collect_columns_kernel<<<blocks, threads>>>(
++            d_pks, d_msgs, d_sigs64, d_keys, static_cast<int>(count));
+         CUDA_TRY(cudaGetLastError());
+         CUDA_TRY(cudaDeviceSynchronize());
+ 
+         CUDA_TRY(cudaMemcpy(key_buffer, d_keys, count, cudaMemcpyDeviceToHost));
+ 
+-        cudaFree(d_keys);
+-        cudaFree(d_sigs);
+-        cudaFree(d_msgs);
+-        cudaFree(d_pks);
+         clear_error();
+         return GpuError::Ok;
+     }

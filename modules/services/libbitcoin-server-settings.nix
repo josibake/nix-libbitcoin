@@ -254,6 +254,7 @@ in {
         maximum_headers = mkNullable (types.nullOr types.ints.unsigned) "The maximum allowed headers returned per request, defaults to '20160'.";
         maximum_history = mkNullable (types.nullOr types.ints.unsigned) "The maximum number of address history entries upon one subscription, defaults to '1000000'.";
         maximum_subscriptions = mkNullable (types.nullOr types.ints.unsigned) "The maximum allowed address subscriptions per channel, defaults to '1000000'.";
+        silent_payment_threads = mkNullable (types.nullOr types.ints.unsigned) "The maximum concurrent silent payment scan workers, defaults to '0' (cores minus two).";
         protocol_minimum = mkNullable (types.nullOr types.str) "Minimum protocol version, defaults to '1.0'.";
         protocol_maximum = mkNullable (types.nullOr types.str) "Maximum protocol version, defaults to '1.7'.";
         server_name = mkNullable (types.nullOr types.str) "String returned by server.version, defaults to '";
@@ -306,9 +307,11 @@ in {
         thread_priority = mkNullable (types.nullOr types.bool) "Set validation threads to high processing priority, defaults to 'true'.";
         memory_priority = mkNullable (types.nullOr types.bool) "Set the process to high memory priority, defaults to 'true'.";
         allow_overlapped = mkNullable (types.nullOr types.bool) "Allow overlapped block requests, defaults to 'true'.";
+        allow_batch_race = mkNullable (types.nullOr types.bool) "Allow downloads to continue when all window signatures are batched, defaults to 'true'.";
         delay_inbound = mkNullable (types.nullOr types.bool) "Delay accepting inbound connections until node is current, defaults to 'true'.";
         defer_validation = mkNullable (types.nullOr types.bool) "Defer validation, defaults to 'false'.";
         defer_confirmation = mkNullable (types.nullOr types.bool) "Defer confirmation, defaults to 'false'.";
+        batch_signatures = mkNullable (types.nullOr types.ints.unsigned) "Count of signatures to verify in a batch, defaults to '100000' (0 disables).";
         fee_estimate_horizon = mkNullable (types.nullOr types.ints.unsigned) "Fee estimation horizon, limited to 1008, defaults to '0' (0 disables).";
         minimum_fee_rate = mkNullable (types.nullOr types.float) "Minimum fee rate for non-conflicting tx acceptance, defaults to '0.0'.";
         minimum_bump_rate = mkNullable (types.nullOr types.float) "Minimum fee rate increment for conflicting tx acceptance, defaults to '0.0'.";
@@ -318,6 +321,8 @@ in {
         maximum_concurrency = mkNullable (types.nullOr types.ints.unsigned) "Maximum number of blocks to download concurrently, defaults to '50000' (0 disables).";
         sample_period_seconds = mkNullable (types.nullOr types.ints.unsigned) "Sampling period for drop of stalled channels, defaults to '10' (0 disables).";
         currency_window_minutes = mkNullable (types.nullOr types.ints.unsigned) "Time from present that blocks are considered current, defaults to '1440' (0 disables).";
+        warn_dirty_background_ratio = mkNullable (types.nullOr types.ints.unsigned) "Warn on linux if 'vm.dirty_background_ratio' is below value, defaults to 90 (0 disables).";
+        warn_dirty_ratio = mkNullable (types.nullOr types.ints.unsigned) "Warn on linux if 'vm.dirty_ratio' is below value, defaults to 90 (0 disables).";
       };
     };
     default = {};
@@ -328,6 +333,7 @@ in {
       options = {
         path = mkNullable (types.nullOr (types.either types.path types.str)) "The blockchain database directory, defaults to 'blockchain'.";
         turbo = mkNullable (types.nullOr types.bool) "Allow indiviudal non-validation queries to use all CPUs, defaults to false.";
+        mark_unconfirmable = mkNullable (types.nullOr types.bool) "Save unconfirmable block state (prevents revalidation), defaults to 'true'.";
         interval_depth = mkNullable (types.nullOr types.ints.unsigned) "The interval depth for merkle proof optimization, defaults to '11'.";
         header_buckets = mkNullable (types.nullOr types.ints.unsigned) "The number of buckets in the header table head, defaults to '386364'.";
         header_size = mkNullable (types.nullOr types.ints.unsigned) "The minimum allocation of the header table body, defaults to '21000000'.";
@@ -356,6 +362,10 @@ in {
         strong_tx_buckets = mkNullable (types.nullOr types.ints.unsigned) "The number of buckets in the strong_tx table head, defaults to '469222525'.";
         strong_tx_size = mkNullable (types.nullOr types.ints.unsigned) "The minimum allocation of the strong_tx table body, defaults to '2900000000'.";
         strong_tx_rate = mkNullable (types.nullOr types.ints.unsigned) "The percentage expansion of the strong_tx table body, defaults to '5'.";
+        ecdsa_size = mkNullable (types.nullOr types.ints.unsigned) "The minimum allocation of the batch_ecdsa table body, defaults to '1'.";
+        ecdsa_rate = mkNullable (types.nullOr types.ints.unsigned) "The percentage expansion of the batch_ecdsa table body, defaults to '5'.";
+        schnorr_size = mkNullable (types.nullOr types.ints.unsigned) "The minimum allocation of the batch_schnorr table body, defaults to '1'.";
+        schnorr_rate = mkNullable (types.nullOr types.ints.unsigned) "The percentage expansion of the batch_schnorr table body, defaults to '5'.";
         duplicate_buckets = mkNullable (types.nullOr types.ints.unsigned) "The minimum number of buckets in the duplicate table head, defaults to '1024'.";
         duplicate_size = mkNullable (types.nullOr types.ints.unsigned) "The minimum allocation of the duplicate table body, defaults to '44'.";
         duplicate_rate = mkNullable (types.nullOr types.ints.unsigned) "The percentage expansion of the duplicate table, defaults to '5'.";
@@ -377,6 +387,10 @@ in {
         filter_tx_buckets = mkNullable (types.nullOr types.ints.unsigned) "The number of buckets in the filter_tx table head, defaults to '0' (0 disables).";
         filter_tx_size = mkNullable (types.nullOr types.ints.unsigned) "The minimum allocation of the filter_tx table body, defaults to '1'.";
         filter_tx_rate = mkNullable (types.nullOr types.ints.unsigned) "The percentage expansion of the filter_tx table body, defaults to '5'.";
+        silent_buckets = mkNullable (types.nullOr types.ints.unsigned) "The number of buckets in the silent table head, defaults to '0' (0 disables).";
+        silent_size = mkNullable (types.nullOr types.ints.unsigned) "The minimum allocation of the silent table body, defaults to '1'.";
+        silent_rate = mkNullable (types.nullOr types.ints.unsigned) "The percentage expansion of the silent table body, defaults to '5'.";
+        silent_start_height = mkNullable (types.nullOr types.ints.unsigned) "The first height indexed by the silent table, defaults to the bip341 activation height.";
       };
     };
     default = {};

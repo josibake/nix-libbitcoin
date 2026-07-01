@@ -1,0 +1,39 @@
+diff --git a/include/bitcoin/system/chain/threshold.hpp b/include/bitcoin/system/chain/threshold.hpp
+index 72d515dfb..343352db9 100644
+--- a/include/bitcoin/system/chain/threshold.hpp
++++ b/include/bitcoin/system/chain/threshold.hpp
+@@ -77,9 +77,9 @@ struct threshold
+             case opcode::greaterthan:
+                 return category_t::greater;
+             case opcode::lessthanorequal:
+-                return category_t::not_lesser;
+-            case opcode::greaterthanorequal:
+                 return category_t::not_greater;
++            case opcode::greaterthanorequal:
++                return category_t::not_lesser;
+             case opcode::within:
+                 return category_t::between;
+             default:
+diff --git a/test/chain/threshold.cpp b/test/chain/threshold.cpp
+index 9f77a2bb4..8b15460e7 100644
+--- a/test/chain/threshold.cpp
++++ b/test/chain/threshold.cpp
+@@ -91,14 +91,14 @@ BOOST_AUTO_TEST_CASE(threshold__to_category__greaterthan__greater)
+     BOOST_CHECK(threshold::to_category(opcode::greaterthan) == threshold::category_t::greater);
+ }
+ 
+-BOOST_AUTO_TEST_CASE(threshold__to_category__lessthanorequal__not_lesser)
++BOOST_AUTO_TEST_CASE(threshold__to_category__lessthanorequal__not_greater)
+ {
+-    BOOST_CHECK(threshold::to_category(opcode::lessthanorequal) == threshold::category_t::not_lesser);
++    BOOST_CHECK(threshold::to_category(opcode::lessthanorequal) == threshold::category_t::not_greater);
+ }
+ 
+-BOOST_AUTO_TEST_CASE(threshold__to_category__greaterthanorequal__not_greater)
++BOOST_AUTO_TEST_CASE(threshold__to_category__greaterthanorequal__not_lesser)
+ {
+-    BOOST_CHECK(threshold::to_category(opcode::greaterthanorequal) == threshold::category_t::not_greater);
++    BOOST_CHECK(threshold::to_category(opcode::greaterthanorequal) == threshold::category_t::not_lesser);
+ }
+ 
+ BOOST_AUTO_TEST_CASE(threshold__to_category__within__between)

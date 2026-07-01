@@ -1,5 +1,9 @@
 # output of nix build
 result
+result-*
+
+# local benchmark/build cache artifacts
+cache_w*.bin
 
 # outputs from running ./result/bin/bn or ./result/bin/bs
 blockchain/

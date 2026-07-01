@@ -1,0 +1,610 @@
+diff --git a/compat/libbitcoin_bridge/src/ufsecp_libbitcoin.cpp b/compat/libbitcoin_bridge/src/ufsecp_libbitcoin.cpp
+index f7f60607..0b9e3bb7 100644
+--- a/compat/libbitcoin_bridge/src/ufsecp_libbitcoin.cpp
++++ b/compat/libbitcoin_bridge/src/ufsecp_libbitcoin.cpp
+@@ -10,9 +10,11 @@
+  *            row C ABI; no intermediate compact row table is built)
+  *         ufsecp_ecdsa_verify_opaque_batch / ufsecp_schnorr_verify
+  *           (columnar fallback: no row re-pack)
+- *   GPU:  ufsecp_gpu_ecdsa_verify_opaque_rows / ufsecp_gpu_schnorr_verify_batch
+- *           (ECDSA reads the caller's libbitcoin rows directly; per-item
+- *            results — one signature per thread)
++ *   GPU:  ufsecp_gpu_ecdsa_verify_opaque_rows /
++ *         ufsecp_gpu_ecdsa_verify_opaque_batch /
++ *         ufsecp_gpu_schnorr_verify_batch
++ *           (ECDSA reads the caller's libbitcoin rows or columns directly;
++ *            per-item results — one signature per thread)
+  *   SP :  ufsecp_gpu_bip352_scan_batch
+  *
+  * GPU dispatch is compile-time optional: define UFSECP_LBTC_WITH_GPU to link the
+@@ -45,11 +47,14 @@
+ #include "secp256k1/batch_add_affine.hpp"
+ 
+ #include <cstring>
++#include <cerrno>
+ #include <new>
+ #include <type_traits>
+ #include <vector>
+ #include <thread>
+ #include <algorithm>
++#include <cstdlib>
++#include <limits>
+ 
+ /* UFSECP_ERR_GPU_UNAVAILABLE lives in ufsecp_gpu.h; provide it for CPU-only builds. */
+ #ifndef UFSECP_ERR_GPU_UNAVAILABLE
+@@ -71,19 +76,43 @@ struct ufsecp_lbtc_ctrl {
+ 
+ namespace {
+ 
+-/* Per-call chunk size. Well below kMaxGpuBatchN (64 M) and any CPU limit, large
+- * enough to amortize device transfer for IBD-scale batches. Tunable.
++/* Per-call chunk size. The GPU C ABI hard-limits one call to 64 M rows, so the
++ * bridge default matches that ceiling and lets libbitcoin's batch-signatures
++ * setting control the actual work size. UFSECP_LBTC_CHUNK_ROWS can lower the
++ * runtime chunk for experiments or smaller devices without rebuilding.
+  *
+- * The default is fixed at 262144. UFSECP_LBTC_CHUNK_OVERRIDE is a TEST-ONLY
+- * compile seam (e.g. -DUFSECP_LBTC_CHUNK_OVERRIDE=8) that lets the multi-chunk
+- * boundary be exercised deterministically without a 262k-row corpus. Production
+- * builds never define it. */
++ * UFSECP_LBTC_CHUNK_OVERRIDE is a TEST-ONLY compile seam that lets the
++ * multi-chunk boundary be exercised deterministically. Production builds never
++ * define it. */
+ #ifndef UFSECP_LBTC_CHUNK_OVERRIDE
+-constexpr std::size_t kChunk = std::size_t{1} << 18; /* 262144 */
++constexpr std::size_t kDefaultChunk = std::size_t{1} << 26; /* 64 M */
+ #else
+-constexpr std::size_t kChunk = UFSECP_LBTC_CHUNK_OVERRIDE;
++constexpr std::size_t kDefaultChunk = UFSECP_LBTC_CHUNK_OVERRIDE;
+ #endif
+ 
++std::size_t configured_chunk_rows() noexcept {
++#ifdef UFSECP_LBTC_CHUNK_OVERRIDE
++    return kDefaultChunk == 0 ? 1 : kDefaultChunk;
++#else
++    static const std::size_t rows = []() noexcept {
++        const char* const value = std::getenv("UFSECP_LBTC_CHUNK_ROWS");
++        if (!value || !*value)
++            return kDefaultChunk;
++
++        errno = 0;
++        char* end = nullptr;
++        const unsigned long long parsed = std::strtoull(value, &end, 10);
++        if (errno != 0 || end == value || parsed == 0)
++            return kDefaultChunk;
++        if (parsed > static_cast<unsigned long long>(
++                         std::numeric_limits<std::size_t>::max()))
++            return kDefaultChunk;
++        return static_cast<std::size_t>(parsed);
++    }();
++    return rows == 0 ? 1 : rows;
++#endif
++}
++
+ enum class Kind { Ecdsa, Schnorr };
+ enum class EcdsaSigFormat { Compact, Opaque };
+ 
+@@ -105,9 +134,10 @@ inline bool cancel_requested(const ufsecp_cancel_token* cancel) noexcept {
+ }
+ 
+ inline std::size_t cancel_chunk_size(const ufsecp_cancel_token* cancel) noexcept {
+-    if (!cancel || cancel->check_interval == 0) return kChunk;
++    const std::size_t chunk = configured_chunk_rows();
++    if (!cancel || cancel->check_interval == 0) return chunk;
+     const std::size_t requested = static_cast<std::size_t>(cancel->check_interval);
+-    return requested < kChunk ? requested : kChunk;
++    return requested < chunk ? requested : chunk;
+ }
+ 
+ /* secp256k1 group order and half-order, big-endian. These are public signature
+@@ -548,6 +578,14 @@ bool gpu_columns_results(ufsecp_gpu_ctx* gpu, Kind k,
+         out = g_lbtc_byte_scratch.bytes(g_lbtc_byte_scratch.a, cnt);
+ 
+     const uint8_t* sig_ptr = sigs64 + base * 64;
++    if (k == Kind::Ecdsa && format == EcdsaSigFormat::Opaque) {
++        const ufsecp_error_t rc =
++            ufsecp_gpu_ecdsa_verify_opaque_batch(gpu, msgs32 + base * 32,
++                                                 pubs + base * pub,
++                                                 sig_ptr, cnt, out);
++        return rc == UFSECP_OK;
++    }
++
+     if (k == Kind::Ecdsa) {
+         uint8_t* sig_norm = g_lbtc_byte_scratch.bytes(g_lbtc_byte_scratch.b, cnt * 64);
+         for (std::size_t i = 0; i < cnt; ++i)
+@@ -579,6 +617,18 @@ bool gpu_columns_collect(ufsecp_gpu_ctx* gpu, Kind k,
+      * backend reports success, so a device failure can safely fall back to CPU. */
+     uint8_t* markers = g_lbtc_byte_scratch.fill(g_lbtc_byte_scratch.a, cnt, 1u);
+     const uint8_t* sig_ptr = sigs64 + base * 64;
++    if (k == Kind::Ecdsa && format == EcdsaSigFormat::Opaque) {
++        const ufsecp_error_t rc =
++            ufsecp_gpu_ecdsa_verify_opaque_collect(gpu, msgs32 + base * 32,
++                                                   pubs + base * pub,
++                                                   sig_ptr, cnt, markers);
++        if (rc != UFSECP_OK) return false;
++
++        for (std::size_t i = 0; i < cnt; ++i)
++            sink.mark(base + i, markers[i] == 0u);
++        return true;
++    }
++
+     if (k == Kind::Ecdsa) {
+         uint8_t* sig_norm = g_lbtc_byte_scratch.bytes(g_lbtc_byte_scratch.b, cnt * 64);
+         for (std::size_t i = 0; i < cnt; ++i)
+@@ -1734,8 +1784,9 @@ ufsecp_error_t ufsecp_lbtc_sp_scan(ufsecp_lbtc_ctrl* ctrl,
+     /* v1: SP scan is GPU-only (CUDA/OpenCL). CPU SP-scan fallback is a follow-up. */
+     if (!ctrl->gpu) return UFSECP_ERR_GPU_UNAVAILABLE;
+ 
+-    for (size_t base = 0; base < n; base += kChunk) {
+-        const size_t cnt = (n - base) < kChunk ? (n - base) : kChunk;
++    const size_t chunk = configured_chunk_rows();
++    for (size_t base = 0; base < n; base += chunk) {
++        const size_t cnt = (n - base) < chunk ? (n - base) : chunk;
+         const ufsecp_error_t rc = ufsecp_gpu_bip352_scan_batch(
+             ctrl->gpu, scan_privkey32, spend_pubkey33,
+             tweak_pubkeys33 + base * 33, cnt, prefix64_out + base);
+diff --git a/include/ufsecp/ufsecp_gpu.h b/include/ufsecp/ufsecp_gpu.h
+index cb6f5376..f2bd7aad 100644
+--- a/include/ufsecp/ufsecp_gpu.h
++++ b/include/ufsecp/ufsecp_gpu.h
+@@ -240,6 +240,31 @@ UFSECP_API ufsecp_error_t ufsecp_gpu_ecdsa_verify_lbtc_rows(
+     size_t count,
+     uint8_t* out_results);
+ 
++/** Batch ECDSA verification from libbitcoin/secp256k1 opaque signature columns.
++ *
++ *  PUBLIC-DATA operation. This is the column-format companion to
++ *  ufsecp_gpu_ecdsa_verify_opaque_rows(). The message and compressed-pubkey
++ *  columns are already in the normal GPU ABI shape; the signature column is
++ *  64-byte secp256k1_ecdsa_signature opaque scalar storage, not compact r||s.
++ *  The backend parses the signature limbs directly, so callers that already
++ *  maintain vertical columns do not need to rewrite the signature column on CPU.
++ *
++ *  @param ctx           GPU context.
++ *  @param msg_hashes32  Input: count * 32 bytes (message hashes).
++ *  @param pubkeys33     Input: count * 33 bytes (compressed pubkeys).
++ *  @param opaque_sigs64 Input: count * 64 bytes opaque secp256k1 signatures.
++ *  @param count         Number of items.
++ *  @param out_results   Output: count bytes (1 = valid, 0 = invalid per item).
++ *  @return UFSECP_OK if batch processed (check out_results for per-item).
++ *          GPU-specific error codes on device failure. */
++UFSECP_API ufsecp_error_t ufsecp_gpu_ecdsa_verify_opaque_batch(
++    ufsecp_gpu_ctx* ctx,
++    const uint8_t* msg_hashes32,
++    const uint8_t* pubkeys33,
++    const uint8_t* opaque_sigs64,
++    size_t count,
++    uint8_t* out_results);
++
+ /** Batch BIP-340 Schnorr verification.
+  *
+  *  PUBLIC-DATA operation.
+@@ -286,6 +311,18 @@ UFSECP_API ufsecp_error_t ufsecp_gpu_ecdsa_verify_collect(
+     size_t count,
+     uint8_t* key_buffer);
+ 
++/** Batch opaque-column ECDSA "collect" verification.
++ *  Same in-place marker semantics as ufsecp_gpu_ecdsa_verify_collect(), but
++ *  the signature column is 64-byte secp256k1 opaque scalar storage.
++ */
++UFSECP_API ufsecp_error_t ufsecp_gpu_ecdsa_verify_opaque_collect(
++    ufsecp_gpu_ctx* ctx,
++    const uint8_t* msg_hashes32,
++    const uint8_t* pubkeys33,
++    const uint8_t* opaque_sigs64,
++    size_t count,
++    uint8_t* key_buffer);
++
+ /** Batch BIP-340 Schnorr "collect" verification (libbitcoin bridge specialization).
+  *  Same verdict + in-place 1-byte verdict semantics as
+  *  ufsecp_gpu_ecdsa_verify_collect; see that doc.
+diff --git a/src/cpu/src/ufsecp_gpu_impl.cpp b/src/cpu/src/ufsecp_gpu_impl.cpp
+index 3ede1ac0..f0ddf992 100644
+--- a/src/cpu/src/ufsecp_gpu_impl.cpp
++++ b/src/cpu/src/ufsecp_gpu_impl.cpp
+@@ -333,6 +333,29 @@ ufsecp_error_t ufsecp_gpu_ecdsa_verify_lbtc_rows(
+         ctx, rows, stride, count, out_results);
+ }
+ 
++ufsecp_error_t ufsecp_gpu_ecdsa_verify_opaque_batch(
++    ufsecp_gpu_ctx* ctx,
++    const uint8_t* msg_hashes32,
++    const uint8_t* pubkeys33,
++    const uint8_t* opaque_sigs64,
++    size_t count,
++    uint8_t* out_results)
++{
++    if (SECP256K1_UNLIKELY(!ctx)) return UFSECP_ERR_NULL_ARG;
++    if (count == 0) return UFSECP_OK;
++    if (count > kMaxGpuBatchN) return UFSECP_ERR_BAD_INPUT;
++    if (!clear_output_bytes(out_results, count, 1)) return UFSECP_ERR_BAD_INPUT;
++    if (SECP256K1_UNLIKELY(!msg_hashes32 || !pubkeys33 || !opaque_sigs64 || !out_results)) {
++        return UFSECP_ERR_NULL_ARG;
++    }
++    try {
++        return to_abi_error_clear_on_fail(
++            ctx->backend->ecdsa_verify_opaque_batch(
++                msg_hashes32, pubkeys33, opaque_sigs64, count, out_results),
++            out_results, count, 1);
++    } UFSECP_GPU_CATCH
++}
++
+ ufsecp_error_t ufsecp_gpu_schnorr_verify_batch(
+     ufsecp_gpu_ctx* ctx,
+     const uint8_t* msg_hashes32,
+@@ -377,6 +400,27 @@ ufsecp_error_t ufsecp_gpu_ecdsa_verify_collect(
+     } UFSECP_GPU_CATCH
+ }
+ 
++ufsecp_error_t ufsecp_gpu_ecdsa_verify_opaque_collect(
++    ufsecp_gpu_ctx* ctx,
++    const uint8_t* msg_hashes32,
++    const uint8_t* pubkeys33,
++    const uint8_t* opaque_sigs64,
++    size_t count,
++    uint8_t* key_buffer)
++{
++    if (SECP256K1_UNLIKELY(!ctx)) return UFSECP_ERR_NULL_ARG;
++    if (count == 0) return UFSECP_OK;
++    if (SECP256K1_UNLIKELY(!msg_hashes32 || !pubkeys33 || !opaque_sigs64 || !key_buffer)) {
++        return UFSECP_ERR_NULL_ARG;
++    }
++    if (count > kMaxGpuBatchN) return UFSECP_ERR_BAD_INPUT;
++    try {
++        return to_abi_error(
++            ctx->backend->ecdsa_verify_opaque_collect(
++                msg_hashes32, pubkeys33, opaque_sigs64, count, key_buffer));
++    } UFSECP_GPU_CATCH
++}
++
+ ufsecp_error_t ufsecp_gpu_schnorr_verify_collect(
+     ufsecp_gpu_ctx* ctx,
+     const uint8_t* msg_hashes32,
+diff --git a/src/gpu/include/gpu_backend.hpp b/src/gpu/include/gpu_backend.hpp
+index edda16a7..1edcd458 100644
+--- a/src/gpu/include/gpu_backend.hpp
++++ b/src/gpu/include/gpu_backend.hpp
+@@ -98,6 +98,21 @@ public:
+         const uint8_t* rows, size_t stride, size_t count,
+         uint8_t* out_results) = 0;
+ 
++    /* Libbitcoin ECDSA column path:
++     *   msg_hashes32 and pubkeys33 are ordinary vertical columns.
++     *   opaque_sigs64 is 64-byte secp256k1_ecdsa_signature scalar storage, not
++     *   compact big-endian r||s. Backends that do not implement this return
++     *   Unsupported so the bridge can fall back through its CPU path. */
++    virtual GpuError ecdsa_verify_opaque_batch(
++        const uint8_t* msg_hashes32, const uint8_t* pubkeys33,
++        const uint8_t* opaque_sigs64, size_t count,
++        uint8_t* out_results)
++    {
++        (void)msg_hashes32; (void)pubkeys33; (void)opaque_sigs64;
++        (void)count; (void)out_results;
++        return GpuError::Unsupported;
++    }
++
+     virtual GpuError schnorr_verify_batch(
+         const uint8_t* msg_hashes32, const uint8_t* pubkeys_x32,
+         const uint8_t* sigs64, size_t count,
+@@ -122,6 +137,16 @@ public:
+         return GpuError::Unsupported;
+     }
+ 
++    virtual GpuError ecdsa_verify_opaque_collect(
++        const uint8_t* msg_hashes32, const uint8_t* pubkeys33,
++        const uint8_t* opaque_sigs64, size_t count,
++        uint8_t* key_buffer)
++    {
++        (void)msg_hashes32; (void)pubkeys33; (void)opaque_sigs64;
++        (void)count; (void)key_buffer;
++        return GpuError::Unsupported;
++    }
++
+     virtual GpuError schnorr_verify_collect(
+         const uint8_t* msg_hashes32, const uint8_t* pubkeys_x32,
+         const uint8_t* sigs64, size_t count,
+diff --git a/src/gpu/src/gpu_backend_cuda.cu b/src/gpu/src/gpu_backend_cuda.cu
+index f0a5db73..d4c7bb8e 100644
+--- a/src/gpu/src/gpu_backend_cuda.cu
++++ b/src/gpu/src/gpu_backend_cuda.cu
+@@ -294,9 +294,24 @@ struct CudaBatchScratch {
+     bool* lbtc_results = nullptr;
+     std::size_t lbtc_rows_bytes = 0;
+     std::size_t lbtc_results_count = 0;
++    uint8_t* column_msgs = nullptr;
++    uint8_t* column_pubs33 = nullptr;
++    uint8_t* column_sigs64 = nullptr;
++    uint8_t* column_keys = nullptr;
++    JacobianPoint* column_pubs = nullptr;
++    bool* column_pub_ok = nullptr;
++    bool* column_results = nullptr;
++    std::size_t column_msgs_bytes = 0;
++    std::size_t column_pubs33_bytes = 0;
++    std::size_t column_sigs64_bytes = 0;
++    std::size_t column_keys_bytes = 0;
++    std::size_t column_pubs_count = 0;
++    std::size_t column_pub_ok_count = 0;
++    std::size_t column_results_count = 0;
+ 
+     ~CudaBatchScratch() {
+         free_lbtc_device();
++        free_column_device();
+     }
+ 
+     uint8_t* ensure_results(std::size_t count) {
+@@ -350,6 +365,118 @@ struct CudaBatchScratch {
+         }
+         return err;
+     }
++
++    void free_column_device() {
++        if (column_results) {
++            cudaFree(column_results);
++            column_results = nullptr;
++            column_results_count = 0;
++        }
++        if (column_pub_ok) {
++            cudaFree(column_pub_ok);
++            column_pub_ok = nullptr;
++            column_pub_ok_count = 0;
++        }
++        if (column_pubs) {
++            cudaFree(column_pubs);
++            column_pubs = nullptr;
++            column_pubs_count = 0;
++        }
++        if (column_keys) {
++            cudaFree(column_keys);
++            column_keys = nullptr;
++            column_keys_bytes = 0;
++        }
++        if (column_sigs64) {
++            cudaFree(column_sigs64);
++            column_sigs64 = nullptr;
++            column_sigs64_bytes = 0;
++        }
++        if (column_pubs33) {
++            cudaFree(column_pubs33);
++            column_pubs33 = nullptr;
++            column_pubs33_bytes = 0;
++        }
++        if (column_msgs) {
++            cudaFree(column_msgs);
++            column_msgs = nullptr;
++            column_msgs_bytes = 0;
++        }
++    }
++
++    cudaError_t ensure_column_bytes(uint8_t*& buffer,
++                                    std::size_t& capacity,
++                                    std::size_t bytes) {
++        if (bytes <= capacity) {
++            return cudaSuccess;
++        }
++        if (buffer) {
++            cudaFree(buffer);
++            buffer = nullptr;
++            capacity = 0;
++        }
++        const cudaError_t err = cudaMalloc(&buffer, bytes);
++        if (err == cudaSuccess) {
++            capacity = bytes;
++        }
++        return err;
++    }
++
++    cudaError_t ensure_column_points(std::size_t count) {
++        if (count <= column_pubs_count) {
++            return cudaSuccess;
++        }
++        if (column_pubs) {
++            cudaFree(column_pubs);
++            column_pubs = nullptr;
++            column_pubs_count = 0;
++        }
++        const cudaError_t err = cudaMalloc(&column_pubs,
++                                           count * sizeof(JacobianPoint));
++        if (err == cudaSuccess) {
++            column_pubs_count = count;
++        }
++        return err;
++    }
++
++    cudaError_t ensure_column_bools(bool*& buffer,
++                                    std::size_t& capacity,
++                                    std::size_t count) {
++        if (count <= capacity) {
++            return cudaSuccess;
++        }
++        if (buffer) {
++            cudaFree(buffer);
++            buffer = nullptr;
++            capacity = 0;
++        }
++        const cudaError_t err = cudaMalloc(&buffer, count * sizeof(bool));
++        if (err == cudaSuccess) {
++            capacity = count;
++        }
++        return err;
++    }
++
++    cudaError_t ensure_ecdsa_column_buffers(std::size_t count,
++                                            bool with_key_markers) {
++        cudaError_t err = ensure_column_bytes(column_msgs, column_msgs_bytes,
++                                              count * 32);
++        if (err != cudaSuccess) return err;
++        err = ensure_column_bytes(column_pubs33, column_pubs33_bytes,
++                                  count * 33);
++        if (err != cudaSuccess) return err;
++        err = ensure_column_bytes(column_sigs64, column_sigs64_bytes,
++                                  count * 64);
++        if (err != cudaSuccess) return err;
++        err = ensure_column_points(count);
++        if (err != cudaSuccess) return err;
++        err = ensure_column_bools(column_pub_ok, column_pub_ok_count, count);
++        if (err != cudaSuccess) return err;
++        if (with_key_markers) {
++            return ensure_column_bytes(column_keys, column_keys_bytes, count);
++        }
++        return ensure_column_bools(column_results, column_results_count, count);
++    }
+ };
+ 
+ static thread_local CudaBatchScratch g_cuda_batch_scratch;
+@@ -441,6 +568,46 @@ __global__ void ecdsa_verify_lbtc_rows_kernel(
+     results[idx] = ok && ecdsa_verify(row, &pub, &sig);
+ }
+ 
++__global__ void ecdsa_verify_opaque_columns_kernel(
++    const uint8_t* __restrict__ msg_hashes,
++    const JacobianPoint* __restrict__ public_keys,
++    const bool* __restrict__ public_key_ok,
++    const uint8_t* __restrict__ opaque_sigs64,
++    bool* __restrict__ results,
++    int count)
++{
++    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
++    if (idx >= count) return;
++
++    ECDSASignatureGPU sig;
++    const bool ok =
++        public_key_ok[idx] &&
++        lbtc_parse_opaque_signature(opaque_sigs64 + static_cast<size_t>(idx) * 64, &sig);
++    results[idx] = ok && ecdsa_verify(msg_hashes + static_cast<size_t>(idx) * 32,
++                                      &public_keys[idx], &sig);
++}
++
++__global__ void ecdsa_verify_opaque_collect_kernel(
++    const uint8_t* __restrict__ msg_hashes,
++    const JacobianPoint* __restrict__ public_keys,
++    const bool* __restrict__ public_key_ok,
++    const uint8_t* __restrict__ opaque_sigs64,
++    uint8_t* __restrict__ key_cells,
++    int count)
++{
++    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
++    if (idx >= count) return;
++
++    ECDSASignatureGPU sig;
++    const bool ok =
++        public_key_ok[idx] &&
++        lbtc_parse_opaque_signature(opaque_sigs64 + static_cast<size_t>(idx) * 64, &sig);
++    if (ok && ecdsa_verify(msg_hashes + static_cast<size_t>(idx) * 32,
++                           &public_keys[idx], &sig)) {
++        key_cells[idx] = 0u;
++    }
++}
++
+ #if SECP256K1_GPU_HAS_MSM
+ /** MSM block reduction: each block reduces BLOCK_SZ partials → 1 result
+  *  via shared-memory tree.  Shared mem = blockDim.x * sizeof(JacobianPoint).
+@@ -739,6 +906,7 @@ public:
+     void shutdown() override {
+         msm_pool_.free_all();
+         g_cuda_batch_scratch.free_lbtc_device();
++        g_cuda_batch_scratch.free_column_device();
+         ready_ = false;
+     }
+ 
+@@ -926,6 +1094,51 @@ gmb_cleanup:
+         return ret;
+     }
+ 
++    GpuError ecdsa_verify_opaque_batch(
++        const uint8_t* msg_hashes32, const uint8_t* pubkeys33,
++        const uint8_t* opaque_sigs64, size_t count,
++        uint8_t* out_results) override
++    {
++        if (!ready_) return set_error(GpuError::Device, "context not initialised");
++        if (count == 0) { clear_error(); return GpuError::Ok; }
++        if (!msg_hashes32 || !pubkeys33 || !opaque_sigs64 || !out_results)
++            return set_error(GpuError::NullArg, "NULL buffer");
++
++        if (g_cuda_batch_scratch.ensure_ecdsa_column_buffers(count, false) != cudaSuccess) {
++            return set_error(GpuError::Memory, "ecdsa opaque column buffer alloc");
++        }
++
++        uint8_t* const d_msgs = g_cuda_batch_scratch.column_msgs;
++        uint8_t* const d_pubs33 = g_cuda_batch_scratch.column_pubs33;
++        uint8_t* const d_sigs64 = g_cuda_batch_scratch.column_sigs64;
++        JacobianPoint* const d_pubs = g_cuda_batch_scratch.column_pubs;
++        bool* const d_pub_ok = g_cuda_batch_scratch.column_pub_ok;
++        bool* const d_res = g_cuda_batch_scratch.column_results;
++
++        CUDA_TRY(cudaMemcpy(d_msgs, msg_hashes32, count * 32, cudaMemcpyHostToDevice));
++        CUDA_TRY(cudaMemcpy(d_pubs33, pubkeys33, count * 33, cudaMemcpyHostToDevice));
++        CUDA_TRY(cudaMemcpy(d_sigs64, opaque_sigs64, count * 64, cudaMemcpyHostToDevice));
++
++        int threads = 128;
++        int blocks  = (static_cast<int>(count) + threads - 1) / threads;
++        batch_compressed_to_jac_kernel<<<blocks, threads>>>(
++            d_pubs33, d_pubs, d_pub_ok, static_cast<int>(count));
++        CUDA_TRY(cudaGetLastError());
++
++        ecdsa_verify_opaque_columns_kernel<<<blocks, threads>>>(
++            d_msgs, d_pubs, d_pub_ok, d_sigs64, d_res, static_cast<int>(count));
++        CUDA_TRY(cudaGetLastError());
++        CUDA_TRY(cudaDeviceSynchronize());
++
++        uint8_t* const h_res = g_cuda_batch_scratch.ensure_results(count);
++        CUDA_TRY(cudaMemcpy(h_res, d_res, count * sizeof(bool), cudaMemcpyDeviceToHost));
++        for (size_t i = 0; i < count; ++i)
++            out_results[i] = h_res[i] ? 1 : 0;
++
++        clear_error();
++        return GpuError::Ok;
++    }
++
+     GpuError schnorr_verify_batch(
+         const uint8_t* msg_hashes32, const uint8_t* pubkeys_x32,
+         const uint8_t* sigs64, size_t count,
+@@ -1045,6 +1258,49 @@ gmb_cleanup:
+         return GpuError::Ok;
+     }
+ 
++    GpuError ecdsa_verify_opaque_collect(
++        const uint8_t* msg_hashes32, const uint8_t* pubkeys33,
++        const uint8_t* opaque_sigs64, size_t count,
++        uint8_t* key_buffer) override
++    {
++        if (!ready_) return set_error(GpuError::Device, "context not initialised");
++        if (count == 0) { clear_error(); return GpuError::Ok; }
++        if (!msg_hashes32 || !pubkeys33 || !opaque_sigs64 || !key_buffer)
++            return set_error(GpuError::NullArg, "NULL buffer");
++
++        if (g_cuda_batch_scratch.ensure_ecdsa_column_buffers(count, true) != cudaSuccess) {
++            return set_error(GpuError::Memory, "ecdsa opaque column collect buffer alloc");
++        }
++
++        uint8_t* const d_msgs = g_cuda_batch_scratch.column_msgs;
++        uint8_t* const d_pubs33 = g_cuda_batch_scratch.column_pubs33;
++        uint8_t* const d_sigs64 = g_cuda_batch_scratch.column_sigs64;
++        uint8_t* const d_keys = g_cuda_batch_scratch.column_keys;
++        JacobianPoint* const d_pubs = g_cuda_batch_scratch.column_pubs;
++        bool* const d_pub_ok = g_cuda_batch_scratch.column_pub_ok;
++
++        CUDA_TRY(cudaMemcpy(d_msgs, msg_hashes32, count * 32, cudaMemcpyHostToDevice));
++        CUDA_TRY(cudaMemcpy(d_pubs33, pubkeys33, count * 33, cudaMemcpyHostToDevice));
++        CUDA_TRY(cudaMemcpy(d_sigs64, opaque_sigs64, count * 64, cudaMemcpyHostToDevice));
++        CUDA_TRY(cudaMemcpy(d_keys, key_buffer, count, cudaMemcpyHostToDevice));
++
++        int threads = 128;
++        int blocks  = (static_cast<int>(count) + threads - 1) / threads;
++        batch_compressed_to_jac_kernel<<<blocks, threads>>>(
++            d_pubs33, d_pubs, d_pub_ok, static_cast<int>(count));
++        CUDA_TRY(cudaGetLastError());
++
++        ecdsa_verify_opaque_collect_kernel<<<blocks, threads>>>(
++            d_msgs, d_pubs, d_pub_ok, d_sigs64, d_keys, static_cast<int>(count));
++        CUDA_TRY(cudaGetLastError());
++        CUDA_TRY(cudaDeviceSynchronize());
++
++        CUDA_TRY(cudaMemcpy(key_buffer, d_keys, count, cudaMemcpyDeviceToHost));
++
++        clear_error();
++        return GpuError::Ok;
++    }
++
+     GpuError schnorr_verify_collect(
+         const uint8_t* msg_hashes32, const uint8_t* pubkeys_x32,
+         const uint8_t* sigs64, size_t count,

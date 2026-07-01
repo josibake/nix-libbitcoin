@@ -20,7 +20,7 @@ nix build
 Build from a local multi-repo checkout instead of the pinned GitHub commits:
 
 ```shell
-LIBBITCOIN_LOCAL_ROOT=~/libbitcoin nix build .#local-libbitcoin-server --print-build-logs
+LIBBITCOIN_LOCAL_ROOT=~/libbitcoin nix build --impure .#local-libbitcoin-server --print-build-logs
 ```
 
 `LIBBITCOIN_LOCAL_ROOT` should point at the directory that contains `repos/`.
@@ -96,4 +96,29 @@ Run only the formatting check:
 
 ```shell
 nix build .#checks.$(nix eval --raw --impure --expr builtins.currentSystem).formatting --no-link
+```
+
+## Silent Payments Load Benchmark
+
+The flake includes a small Electrum JSON-RPC load driver for iterating on
+silent payments scan performance against a local or remote `bs` instance:
+
+```shell
+nix run .#sp-load -- \
+  --host 127.0.0.1 \
+  --port 50001 \
+  --scan-private-key <32-byte-hex-scan-secret> \
+  --spend-public-key <33-byte-hex-spend-public-key> \
+  --start 709632 \
+  --requests 16 \
+  --clients 4
+```
+
+Use `--stop <height>` for bounded scan windows, `--labels 1,2,3` for labelled
+wallet scans, and `--json-out report.json` when comparing runs.
+
+Probe only the Electrum handshake and feature advertisement with:
+
+```shell
+nix run .#sp-load -- --host 127.0.0.1 --port 50001 --probe-only
 ```

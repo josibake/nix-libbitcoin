@@ -83,6 +83,12 @@ in {
       description = "Path to a complete bs configuration file. When set, settings and extraConfig are ignored.";
     };
 
+    renderedConfigFile = lib.mkOption {
+      type = lib.types.path;
+      readOnly = true;
+      description = "Final bs configuration file used by the systemd service.";
+    };
+
     settings = lib.mkOption {
       type = lib.types.submodule {
         options = settingsOptions;
@@ -116,6 +122,8 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    services.libbitcoin-server.renderedConfigFile = configFile;
+
     services.libbitcoin-server.settings = lib.mkIf (cfg.configFile == null) {
       database.path = lib.mkDefault "${cfg.dataDir}/blockchain";
       log.path = lib.mkDefault cfg.logDir;

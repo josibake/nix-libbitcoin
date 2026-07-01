@@ -39,6 +39,7 @@ in
     patches = [
       ./patches/ultrafast-cuda-field-inv-launch-bounds.patch
       ./patches/ultrafast-libbitcoin-streaming-gpu.patch
+      ./patches/ultrafast-libbitcoin-bridge-status-propagation.patch
       ./patches/ultrafast-cuda-column-offsets-64bit.patch
       ./patches/ultrafast-cuda-columnar-schnorr-fast-path.patch
     ];

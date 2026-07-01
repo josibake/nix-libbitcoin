@@ -1,0 +1,79 @@
+diff --git a/compat/libbitcoin_bridge/src/ufsecp_libbitcoin.cpp b/compat/libbitcoin_bridge/src/ufsecp_libbitcoin.cpp
+index 0b9e3bb..1a79058 100644
+--- a/compat/libbitcoin_bridge/src/ufsecp_libbitcoin.cpp
++++ b/compat/libbitcoin_bridge/src/ufsecp_libbitcoin.cpp
+@@ -373,9 +373,16 @@ void cpu_chunk(ufsecp_ctx* ctx, Kind k, const uint8_t* rows,
+                   ctx, rows + base * stride, stride, cnt, verdicts)
+             : ufsecp_ecdsa_verify_opaque_rows_mt(
+                   ctx, rows + base * stride, stride, cnt, verdicts, max_threads);
+-        for (std::size_t i = 0; i < cnt; ++i) {
+-            sink.mark(base + i, rc == UFSECP_OK && verdicts[i] != 0);
++        if (rc == UFSECP_OK) {
++            for (std::size_t i = 0; i < cnt; ++i)
++                sink.mark(base + i, verdicts[i] != 0);
++            return;
+         }
++
++        for (std::size_t i = 0; i < cnt; ++i)
++            sink.mark(base + i,
++                      cpu_verify_one(ctx, k, rows + (base + i) * stride)
++                          == UFSECP_OK);
+         return;
+     }
+ 
+@@ -444,9 +451,17 @@ void cpu_columns_chunk(ufsecp_ctx* ctx, Kind k,
+             sigs64 + base * 64,
+             cnt,
+             verdicts);
+-        for (std::size_t i = 0; i < cnt; ++i) {
+-            sink.mark(base + i, rc == UFSECP_OK && verdicts[i] != 0);
++        if (rc == UFSECP_OK) {
++            for (std::size_t i = 0; i < cnt; ++i)
++                sink.mark(base + i, verdicts[i] != 0);
++            return;
+         }
++
++        for (std::size_t i = 0; i < cnt; ++i)
++            sink.mark(base + i,
++                      cpu_verify_columns_one(ctx, k, msgs32 + (base + i) * 32,
++                          pubs + (base + i) * pub, sigs64 + (base + i) * 64, format)
++                          == UFSECP_OK);
+         return;
+     }
+ 
+@@ -697,7 +712,7 @@ ufsecp_error_t verify_core(ufsecp_lbtc_ctrl* ctrl, Kind k, const uint8_t* rows,
+             cpu_chunk(ctrl->cpu, k, rows, base, cnt, stride, format, sink, max_threads);
+         }
+     } catch (...) {
+-        return UFSECP_OK; /* fail-closed: unprocessed rows remain at caller initial state */
++        return UFSECP_ERR_INTERNAL;
+     }
+     return UFSECP_OK;
+ }
+@@ -761,7 +776,7 @@ ufsecp_error_t verify_columns_results_impl(ufsecp_lbtc_ctrl* ctrl, Kind k,
+                               format, sink);
+         }
+     } catch (...) {
+-        return UFSECP_OK; /* fail-closed: caller-initialized result bytes remain untouched */
++        return UFSECP_ERR_INTERNAL;
+     }
+     return UFSECP_OK;
+ }
+@@ -792,7 +807,7 @@ ufsecp_error_t verify_columns_collect_impl(ufsecp_lbtc_ctrl* ctrl, Kind k,
+                               format, sink);
+         }
+     } catch (...) {
+-        return UFSECP_OK; /* fail-closed: unprocessed key cells stay non-zero/rejected */
++        return UFSECP_ERR_INTERNAL;
+     }
+     return UFSECP_OK;
+ }
+@@ -830,7 +845,7 @@ ufsecp_error_t verify_rows_impl(ufsecp_lbtc_ctrl* ctrl, Kind k,
+     else std::memset(res, 0, n);
+ 
+     const ufsecp_error_t rc = verify_results_impl(ctrl, k, rows, n, key_size, format, res, cancel, max_threads);
+-    if (rc == UFSECP_ERR_CANCELLED) return rc;
++    if (rc != UFSECP_OK) return rc;
+ 
+     std::size_t failed = 0;
+     for (std::size_t i = 0; i < n; ++i) {

@@ -1,5 +1,5 @@
 diff --git a/compat/libbitcoin_bridge/src/ufsecp_libbitcoin.cpp b/compat/libbitcoin_bridge/src/ufsecp_libbitcoin.cpp
-index f7f60607..0b9e3bb7 100644
+index f7f6060..8a762ae 100644
 --- a/compat/libbitcoin_bridge/src/ufsecp_libbitcoin.cpp
 +++ b/compat/libbitcoin_bridge/src/ufsecp_libbitcoin.cpp
 @@ -10,9 +10,11 @@
@@ -17,31 +17,22 @@ index f7f60607..0b9e3bb7 100644
   *   SP :  ufsecp_gpu_bip352_scan_batch
   *
   * GPU dispatch is compile-time optional: define UFSECP_LBTC_WITH_GPU to link the
-@@ -45,11 +47,14 @@
- #include "secp256k1/batch_add_affine.hpp"
- 
- #include <cstring>
-+#include <cerrno>
- #include <new>
- #include <type_traits>
- #include <vector>
- #include <thread>
- #include <algorithm>
-+#include <cstdlib>
-+#include <limits>
- 
- /* UFSECP_ERR_GPU_UNAVAILABLE lives in ufsecp_gpu.h; provide it for CPU-only builds. */
- #ifndef UFSECP_ERR_GPU_UNAVAILABLE
-@@ -71,19 +76,43 @@ struct ufsecp_lbtc_ctrl {
+@@ -66,23 +68,58 @@ struct ufsecp_lbtc_ctrl {
+     ufsecp_gpu_ctx*   gpu  = nullptr;                 /* null when CPU-bound   */
+ #endif
+     ufsecp_lbtc_bound bound = UFSECP_LBTC_BOUND_CPU;
++    std::size_t       chunk_rows = 0;
+     char              device_name[128] = {'C', 'P', 'U', '\0'};
+ };
  
  namespace {
  
 -/* Per-call chunk size. Well below kMaxGpuBatchN (64 M) and any CPU limit, large
 - * enough to amortize device transfer for IBD-scale batches. Tunable.
-+/* Per-call chunk size. The GPU C ABI hard-limits one call to 64 M rows, so the
-+ * bridge default matches that ceiling and lets libbitcoin's batch-signatures
-+ * setting control the actual work size. UFSECP_LBTC_CHUNK_ROWS can lower the
-+ * runtime chunk for experiments or smaller devices without rebuilding.
++/* Chunking is an engine-owned implementation detail. The GPU C ABI hard-limits
++ * one call to 64 M rows, and the bridge selects a per-controller chunk from the
++ * selected device's memory so callers can choose logical batch sizes without
++ * knowing GPU staging requirements.
   *
 - * The default is fixed at 262144. UFSECP_LBTC_CHUNK_OVERRIDE is a TEST-ONLY
 - * compile seam (e.g. -DUFSECP_LBTC_CHUNK_OVERRIDE=8) that lets the multi-chunk
@@ -50,46 +41,58 @@ index f7f60607..0b9e3bb7 100644
 + * UFSECP_LBTC_CHUNK_OVERRIDE is a TEST-ONLY compile seam that lets the
 + * multi-chunk boundary be exercised deterministically. Production builds never
 + * define it. */
++constexpr std::size_t kGpuBatchLimit = std::size_t{1} << 26; /* C ABI limit. */
  #ifndef UFSECP_LBTC_CHUNK_OVERRIDE
 -constexpr std::size_t kChunk = std::size_t{1} << 18; /* 262144 */
-+constexpr std::size_t kDefaultChunk = std::size_t{1} << 26; /* 64 M */
++constexpr std::size_t kMaxChunkRows = kGpuBatchLimit;
  #else
 -constexpr std::size_t kChunk = UFSECP_LBTC_CHUNK_OVERRIDE;
-+constexpr std::size_t kDefaultChunk = UFSECP_LBTC_CHUNK_OVERRIDE;
++constexpr std::size_t kMaxChunkRows = UFSECP_LBTC_CHUNK_OVERRIDE;
  #endif
- 
-+std::size_t configured_chunk_rows() noexcept {
-+#ifdef UFSECP_LBTC_CHUNK_OVERRIDE
-+    return kDefaultChunk == 0 ? 1 : kDefaultChunk;
-+#else
-+    static const std::size_t rows = []() noexcept {
-+        const char* const value = std::getenv("UFSECP_LBTC_CHUNK_ROWS");
-+        if (!value || !*value)
-+            return kDefaultChunk;
++constexpr std::size_t kAutoChunkFloor = std::size_t{1} << 18;
++constexpr std::size_t kAutoMemoryDivisor = 4;
++constexpr std::size_t kAutoVerifyBytesPerRow = 1536;
 +
-+        errno = 0;
-+        char* end = nullptr;
-+        const unsigned long long parsed = std::strtoull(value, &end, 10);
-+        if (errno != 0 || end == value || parsed == 0)
-+            return kDefaultChunk;
-+        if (parsed > static_cast<unsigned long long>(
-+                         std::numeric_limits<std::size_t>::max()))
-+            return kDefaultChunk;
-+        return static_cast<std::size_t>(parsed);
-+    }();
-+    return rows == 0 ? 1 : rows;
++inline std::size_t limit_chunk_rows(std::size_t rows) noexcept {
++    if (rows == 0)
++        return 1;
++    return rows > kMaxChunkRows ? kMaxChunkRows : rows;
++}
++
++std::size_t select_chunk_rows_for_memory(uint64_t global_mem_bytes) noexcept {
++#ifdef UFSECP_LBTC_CHUNK_OVERRIDE
++    return kMaxChunkRows == 0 ? 1 : kMaxChunkRows;
++#else
++    if (global_mem_bytes == 0)
++        return kMaxChunkRows;
++
++    const auto budget = global_mem_bytes / kAutoMemoryDivisor;
++    const auto rows64 = budget / kAutoVerifyBytesPerRow;
++    auto rows = rows64 > static_cast<uint64_t>(kMaxChunkRows)
++                  ? kMaxChunkRows
++                  : static_cast<std::size_t>(rows64);
++    if (rows < kAutoChunkFloor)
++        rows = kAutoChunkFloor;
++    return limit_chunk_rows(rows);
 +#endif
 +}
 +
++std::size_t selected_chunk_rows(const ufsecp_lbtc_ctrl* ctrl) noexcept {
++    return ctrl && ctrl->chunk_rows != 0 ? ctrl->chunk_rows
++                                         : select_chunk_rows_for_memory(0);
++}
+ 
  enum class Kind { Ecdsa, Schnorr };
  enum class EcdsaSigFormat { Compact, Opaque };
- 
-@@ -105,9 +134,10 @@ inline bool cancel_requested(const ufsecp_cancel_token* cancel) noexcept {
+@@ -104,10 +141,12 @@ inline bool cancel_requested(const ufsecp_cancel_token* cancel) noexcept {
+     }
  }
  
- inline std::size_t cancel_chunk_size(const ufsecp_cancel_token* cancel) noexcept {
+-inline std::size_t cancel_chunk_size(const ufsecp_cancel_token* cancel) noexcept {
 -    if (!cancel || cancel->check_interval == 0) return kChunk;
-+    const std::size_t chunk = configured_chunk_rows();
++inline std::size_t cancel_chunk_size(const ufsecp_lbtc_ctrl* ctrl,
++                                     const ufsecp_cancel_token* cancel) noexcept {
++    const std::size_t chunk = selected_chunk_rows(ctrl);
 +    if (!cancel || cancel->check_interval == 0) return chunk;
      const std::size_t requested = static_cast<std::size_t>(cancel->check_interval);
 -    return requested < kChunk ? requested : kChunk;
@@ -97,7 +100,7 @@ index f7f60607..0b9e3bb7 100644
  }
  
  /* secp256k1 group order and half-order, big-endian. These are public signature
-@@ -548,6 +578,14 @@ bool gpu_columns_results(ufsecp_gpu_ctx* gpu, Kind k,
+@@ -548,6 +587,14 @@ bool gpu_columns_results(ufsecp_gpu_ctx* gpu, Kind k,
          out = g_lbtc_byte_scratch.bytes(g_lbtc_byte_scratch.a, cnt);
  
      const uint8_t* sig_ptr = sigs64 + base * 64;
@@ -112,7 +115,7 @@ index f7f60607..0b9e3bb7 100644
      if (k == Kind::Ecdsa) {
          uint8_t* sig_norm = g_lbtc_byte_scratch.bytes(g_lbtc_byte_scratch.b, cnt * 64);
          for (std::size_t i = 0; i < cnt; ++i)
-@@ -579,6 +617,18 @@ bool gpu_columns_collect(ufsecp_gpu_ctx* gpu, Kind k,
+@@ -579,6 +626,18 @@ bool gpu_columns_collect(ufsecp_gpu_ctx* gpu, Kind k,
       * backend reports success, so a device failure can safely fall back to CPU. */
      uint8_t* markers = g_lbtc_byte_scratch.fill(g_lbtc_byte_scratch.a, cnt, 1u);
      const uint8_t* sig_ptr = sigs64 + base * 64;
@@ -131,20 +134,63 @@ index f7f60607..0b9e3bb7 100644
      if (k == Kind::Ecdsa) {
          uint8_t* sig_norm = g_lbtc_byte_scratch.bytes(g_lbtc_byte_scratch.b, cnt * 64);
          for (std::size_t i = 0; i < cnt; ++i)
-@@ -1734,8 +1784,9 @@ ufsecp_error_t ufsecp_lbtc_sp_scan(ufsecp_lbtc_ctrl* ctrl,
+@@ -621,7 +680,7 @@ ufsecp_error_t verify_core(ufsecp_lbtc_ctrl* ctrl, Kind k, const uint8_t* rows,
+                            const ufsecp_cancel_token* cancel,
+                            std::size_t max_threads = 1) {
+     try {
+-        const std::size_t chunk = cancel_chunk_size(cancel);
++        const std::size_t chunk = cancel_chunk_size(ctrl, cancel);
+         for (std::size_t base = 0; base < n; base += chunk) {
+             if (cancel_requested(cancel)) return UFSECP_ERR_CANCELLED;
+             const std::size_t cnt = (n - base) < chunk ? (n - base) : chunk;
+@@ -697,7 +756,7 @@ ufsecp_error_t verify_columns_results_impl(ufsecp_lbtc_ctrl* ctrl, Kind k,
+     if (!ctrl || n == 0 || !msgs32 || !pubs || !sigs64) return UFSECP_OK;
+     ResultSink sink{results};
+     try {
+-        const std::size_t chunk = cancel_chunk_size(cancel);
++        const std::size_t chunk = cancel_chunk_size(ctrl, cancel);
+         for (std::size_t base = 0; base < n; base += chunk) {
+             if (cancel_requested(cancel)) return UFSECP_ERR_CANCELLED;
+             const std::size_t cnt = (n - base) < chunk ? (n - base) : chunk;
+@@ -728,7 +787,7 @@ ufsecp_error_t verify_columns_collect_impl(ufsecp_lbtc_ctrl* ctrl, Kind k,
+         return UFSECP_OK;
+     KeyColumnSink sink{key_cells, key_size};
+     try {
+-        const std::size_t chunk = cancel_chunk_size(cancel);
++        const std::size_t chunk = cancel_chunk_size(ctrl, cancel);
+         for (std::size_t base = 0; base < n; base += chunk) {
+             if (cancel_requested(cancel)) return UFSECP_ERR_CANCELLED;
+             const std::size_t cnt = (n - base) < chunk ? (n - base) : chunk;
+@@ -808,6 +867,7 @@ ufsecp_error_t ufsecp_lbtc_ctrl_create(ufsecp_lbtc_ctrl** out,
+ 
+     auto* c = new (std::nothrow) ufsecp_lbtc_ctrl{};
+     if (!c) return UFSECP_ERR_INTERNAL;
++    c->chunk_rows = select_chunk_rows_for_memory(0);
+ 
+     if (ufsecp_ctx_create(&c->cpu) != UFSECP_OK || !c->cpu) {
+         delete c;
+@@ -831,6 +891,7 @@ ufsecp_error_t ufsecp_lbtc_ctrl_create(ufsecp_lbtc_ctrl** out,
+                     std::strncpy(c->device_name, info.name,
+                                  sizeof(c->device_name) - 1);
+                     c->device_name[sizeof(c->device_name) - 1] = '\0';
++                    c->chunk_rows = select_chunk_rows_for_memory(info.global_mem_bytes);
+                 }
+                 break;
+             }
+@@ -1734,8 +1795,9 @@ ufsecp_error_t ufsecp_lbtc_sp_scan(ufsecp_lbtc_ctrl* ctrl,
      /* v1: SP scan is GPU-only (CUDA/OpenCL). CPU SP-scan fallback is a follow-up. */
      if (!ctrl->gpu) return UFSECP_ERR_GPU_UNAVAILABLE;
  
 -    for (size_t base = 0; base < n; base += kChunk) {
 -        const size_t cnt = (n - base) < kChunk ? (n - base) : kChunk;
-+    const size_t chunk = configured_chunk_rows();
++    const size_t chunk = selected_chunk_rows(ctrl);
 +    for (size_t base = 0; base < n; base += chunk) {
 +        const size_t cnt = (n - base) < chunk ? (n - base) : chunk;
          const ufsecp_error_t rc = ufsecp_gpu_bip352_scan_batch(
              ctrl->gpu, scan_privkey32, spend_pubkey33,
              tweak_pubkeys33 + base * 33, cnt, prefix64_out + base);
 diff --git a/include/ufsecp/ufsecp_gpu.h b/include/ufsecp/ufsecp_gpu.h
-index cb6f5376..f2bd7aad 100644
+index cb6f537..f2bd7aa 100644
 --- a/include/ufsecp/ufsecp_gpu.h
 +++ b/include/ufsecp/ufsecp_gpu.h
 @@ -240,6 +240,31 @@ UFSECP_API ufsecp_error_t ufsecp_gpu_ecdsa_verify_lbtc_rows(
@@ -199,7 +245,7 @@ index cb6f5376..f2bd7aad 100644
   *  Same verdict + in-place 1-byte verdict semantics as
   *  ufsecp_gpu_ecdsa_verify_collect; see that doc.
 diff --git a/src/cpu/src/ufsecp_gpu_impl.cpp b/src/cpu/src/ufsecp_gpu_impl.cpp
-index 3ede1ac0..f0ddf992 100644
+index 3ede1ac..f0ddf99 100644
 --- a/src/cpu/src/ufsecp_gpu_impl.cpp
 +++ b/src/cpu/src/ufsecp_gpu_impl.cpp
 @@ -333,6 +333,29 @@ ufsecp_error_t ufsecp_gpu_ecdsa_verify_lbtc_rows(
@@ -261,7 +307,7 @@ index 3ede1ac0..f0ddf992 100644
      ufsecp_gpu_ctx* ctx,
      const uint8_t* msg_hashes32,
 diff --git a/src/gpu/include/gpu_backend.hpp b/src/gpu/include/gpu_backend.hpp
-index edda16a7..1edcd458 100644
+index edda16a..1edcd45 100644
 --- a/src/gpu/include/gpu_backend.hpp
 +++ b/src/gpu/include/gpu_backend.hpp
 @@ -98,6 +98,21 @@ public:
@@ -304,7 +350,7 @@ index edda16a7..1edcd458 100644
          const uint8_t* msg_hashes32, const uint8_t* pubkeys_x32,
          const uint8_t* sigs64, size_t count,
 diff --git a/src/gpu/src/gpu_backend_cuda.cu b/src/gpu/src/gpu_backend_cuda.cu
-index f0a5db73..d4c7bb8e 100644
+index f0a5db7..d4c7bb8 100644
 --- a/src/gpu/src/gpu_backend_cuda.cu
 +++ b/src/gpu/src/gpu_backend_cuda.cu
 @@ -294,9 +294,24 @@ struct CudaBatchScratch {

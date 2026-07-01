@@ -1,0 +1,78 @@
+diff --git a/src/crypto/secp256k1/batch.cpp b/src/crypto/secp256k1/batch.cpp
+index 517b932..51bee42 100644
+--- a/src/crypto/secp256k1/batch.cpp
++++ b/src/crypto/secp256k1/batch.cpp
+@@ -67,6 +67,26 @@ inline bool verify_signature(const schnorr::batch& batch, size_t row) NOEXCEPT
+ // batch_verify
+ // ----------------------------------------------------------------------------
+ 
++template <typename Batch>
++data_chunk reference_batch_verify(const stopper& cancel, const Batch& batch) NOEXCEPT
++{
++    constexpr auto policy = poolstl::execution::par;
++
++    const auto count = batch.correlates.size();
++    std::vector<size_t> it(count);
++    std::iota(it.begin(), it.end(), zero);
++
++    // Collect signature validation results as corresponding integer booleans.
++    data_chunk results(count);
++    std::for_each(policy, it.cbegin(), it.cend(), [&](size_t row) NOEXCEPT
++    {
++        if (cancel) return;
++        results.at(row) = to_int<uint8_t>(verify_signature(batch, row));
++    });
++
++    return results;
++}
++
+ #if defined(HAVE_ULTRAFAST)
+ 
+ template <typename Batch>
+@@ -96,17 +116,21 @@ data_chunk batch_verify(const stopper& cancel, const Batch& batch) NOEXCEPT
+     const auto sigs = pointer_cast<const uint8_t>(batch.signatures.data());
+     const ufsecp_cancel_token token{ callback, &cancel, 0 };
+ 
++    ufsecp_error_t code{};
+     if constexpr (is_same_type<Batch, schnorr::batch>)
+     {
+-        ufsecp_lbtc_verify_schnorr_columns(context, digests, points, sigs,
++        code = ufsecp_lbtc_verify_schnorr_columns(context, digests, points, sigs,
+             count, results.data(), &token);
+     }
+     else
+     {
+-        ufsecp_lbtc_verify_ecdsa_columns(context, digests, points, sigs,
++        code = ufsecp_lbtc_verify_ecdsa_columns(context, digests, points, sigs,
+             count, results.data(), &token);
+     }
+ 
++    if (code != UFSECP_OK && !cancel.load(std::memory_order_relaxed))
++        return reference_batch_verify(cancel, batch);
++
+     return results;
+ }
+ 
+@@ -115,21 +139,7 @@ data_chunk batch_verify(const stopper& cancel, const Batch& batch) NOEXCEPT
+ template <typename Batch>
+ data_chunk batch_verify(const stopper& cancel, const Batch& batch) NOEXCEPT
+ {
+-    constexpr auto policy = poolstl::execution::par;
+-
+-    const auto count = batch.correlates.size();
+-    std::vector<size_t> it(count);
+-    std::iota(it.begin(), it.end(), zero);
+-
+-    // Collect signature validation results as corresponding integer booleans.
+-    data_chunk results(count);
+-    std::for_each(policy, it.cbegin(), it.cend(), [&](size_t row) NOEXCEPT
+-    {
+-        if (cancel) return;
+-        results.at(row) = to_int<uint8_t>(verify_signature(batch, row));
+-    });
+-
+-    return results;
++    return reference_batch_verify(cancel, batch);
+ }
+ 
+ #endif

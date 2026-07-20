@@ -25,6 +25,12 @@ LIBBITCOIN_LOCAL_ROOT=~/libbitcoin nix build --impure .#local-libbitcoin-server 
 
 `LIBBITCOIN_LOCAL_ROOT` should point at the directory that contains `repos/`.
 
+Run the default package directly with:
+
+```shell
+nix run . -- --settings
+```
+
 Available packages:
 
 - `libbitcoin-system`
@@ -37,6 +43,8 @@ The package set also contains `secp256k1CmakeConfig`, a small CMake package
 config shim for nixpkgs' `secp256k1`. nixpkgs already provides the library, but
 libbitcoin's CMake files expect `find_package(libsecp256k1)` and the imported
 target `libsecp256k1::secp256k1`.
+
+Consumers that need the full package set can use `legacyPackages.${system}`.
 
 ## NixOS
 
@@ -86,16 +94,12 @@ Format Nix files with:
 nix fmt
 ```
 
+The flake formatter uses `treefmt-nix` to run the official Nix formatter.
+
 Run evaluation checks without building the C++ packages:
 
 ```shell
 nix flake check --no-build --all-systems
-```
-
-Run only the formatting check:
-
-```shell
-nix build .#checks.$(nix eval --raw --impure --expr builtins.currentSystem).formatting --no-link
 ```
 
 ## Silent Payments Load Benchmark
